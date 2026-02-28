@@ -1,174 +1,225 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.4.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4)
-![Python](https://img.shields.io/badge/Python-3.9--3.12-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Status](https://img.shields.io/badge/status-active-success)
 
-> AI-powered real-time face slimming with MediaPipe 478-landmark detection, smooth RBF warping, and temporal stabilization. Webcam preview, video file processing, A/B comparison, and one-click export.
+> AI-powered face slimming, reshaping, and beautification suite with real-time preview, GPU acceleration, and CLI batch processing. Zero configuration — auto-installs all dependencies and downloads models on first run.
 
 ![Screenshot](screenshot.png)
-<!-- Add your own screenshot.png to the repo root -->
 
-## Installation
+## Quick Start
 
 ```bash
 git clone https://github.com/SysAdminDoc/FaceSlim.git
 cd FaceSlim
-python FaceSlim.py  # Auto-installs dependencies and downloads model on first run
+python FaceSlim_v1.py
 ```
 
-Fully turnkey — the script auto-bootstraps PyQt5, OpenCV, MediaPipe, NumPy, and SciPy on first launch, then downloads the 3.7 MB face landmarker model from Google's servers. No manual setup required.
+Everything is automatic. On first launch, FaceSlim bootstraps PyQt5, OpenCV, MediaPipe, ONNX Runtime, scipy, and Pillow, then downloads the face landmarker (~3.7 MB) and BiSeNet parsing model (~50 MB).
 
 ## Features
 
-| Feature | Description | Default |
-|---------|-------------|---------|
-| Jaw Slimming | Narrows the jawline contour using 9 bilateral landmark pairs | 0% (0–100) |
-| Cheek Slimming | Reduces cheek fullness via 12 bilateral landmark pairs | 0% (0–100) |
-| Chin Reshape | Lifts and narrows the chin region across 15 landmarks | 0% (0–100) |
-| Overall Width | Reduces total face width along the full jaw contour | 0% (0–100) |
-| Warp Smoothing | Controls RBF displacement field smoothness | 50% (10–100) |
-| A/B Compare | Split-screen original vs slimmed with labeled divider | Off |
-| Face Landmarks | Color-coded overlay of jaw, cheek, and chin landmark groups | Off |
-| Quick Presets | Subtle / Moderate / Strong / Reset one-click presets | — |
-| Video Export | Frame-by-frame processing with progress bar and audio mux | — |
-| Settings Persistence | Remembers all slider positions between sessions via QSettings | Enabled |
-| Auto-Bootstrap | Installs all Python dependencies automatically on first run | Enabled |
-| Auto-Model Download | Downloads MediaPipe face landmarker model if not present | Enabled |
-| Crash Logging | Writes full traceback to `crash.log` on unhandled exceptions | Enabled |
-| Dark Theme | Catppuccin Mocha dark UI with accent-colored controls | Enabled |
-| FPS Counter | Live color-coded FPS display (green/yellow/red thresholds) | Enabled |
+### Face Reshaping (Warp-Based)
 
-## Usage
+| Feature | Description | Method |
+|---------|-------------|--------|
+| Jaw Slimming | Narrows the jawline | TPS warp toward face center |
+| Cheek Slimming | Reduces cheek fullness | TPS warp toward face center |
+| Chin Reshape | Lifts and narrows the chin | TPS warp with vertical bias |
+| Overall Width | Reduces overall face width | Full jaw contour inward warp |
+| Forehead Slim | Narrows the forehead | TPS warp on forehead landmarks |
+| Nose Slim | Narrows the nose bridge and tip | Horizontal-only warp toward nose centerline |
+| Eye Enlarge | Enlarges eyes from iris center | Radial outward push on eye contour |
+| Lip Plump | Plumps lips outward | Directional push (upper=up, lower=down) + radial |
 
-### Webcam Mode
+### AI Beauty (BiSeNet Parsing-Based)
 
-Click **Webcam** to start real-time face slimming with your default camera. Adjust sliders and see changes applied live.
+| Feature | Description | Method |
+|---------|-------------|--------|
+| Skin Smoothing | Smooths skin while preserving texture | Frequency-separation bilateral filter on skin-only mask |
+| Skin Tone Even | Reduces redness and blotchiness | LAB color correction + mean-color blending |
+| Teeth Whitening | Brightens teeth naturally | HSV saturation/brightness on mouth interior only |
+| Eye Sharpen | Sharpens iris and brow detail | Unsharp mask on eye/brow parsing region |
+| Lip Color | Boosts lip saturation and warmth | HSV saturation boost on lip parsing region |
 
-### Video File Mode
+### Pipeline & Performance
 
-Click **Load Video** to open MP4, AVI, MOV, MKV, WebM, or WMV files. The video loops continuously with face slimming applied in real-time. This also enables the **Export Video** button.
-
-### A/B Comparison
-
-Toggle **A/B Compare** to see a split-screen view — original on the left half, slimmed on the right, separated by a labeled blue divider line.
-
-### Presets
-
-| Preset | Jaw | Cheeks | Chin | Width |
-|--------|-----|--------|------|-------|
-| Subtle | 15% | 10% | 5% | 10% |
-| Moderate | 35% | 25% | 15% | 20% |
-| Strong | 60% | 45% | 30% | 35% |
-| Reset | 0% | 0% | 0% | 0% |
-
-### Exporting
-
-1. Load a video file
-2. Adjust sliders to desired effect
-3. Click **Export Video** and choose output path
-4. Processing runs frame-by-frame with a progress bar
-5. Audio is automatically preserved if FFmpeg is available on PATH
+| Feature | Description |
+|---------|-------------|
+| BiSeNet Face Parsing | 19-class pixel-level segmentation via ONNX Runtime |
+| Background Protection | ROI-isolated warp + seamless clone composite |
+| Temporal Mask Smoothing | EMA filter prevents parsing mask flicker on video |
+| Optical Flow Propagation | Warp displacement propagation between TPS keyframes |
+| GPU Acceleration | PyTorch TPS warping on CUDA (auto-detected) |
+| Multi-Face Support | Up to 5 simultaneous faces with per-face caching |
+| Real-Time Preview | Webcam/video with live slider adjustment |
+| A/B Compare | Draggable split-screen before/after overlay |
+| Batch Processing | Folder/multi-file image and video processing |
+| CLI Mode | Headless with presets and per-param control |
+| Preset System | 9 built-in + unlimited custom presets (JSON) |
+| Before/After GIF | One-click animated comparison export |
+| Drag & Drop | Drop images/videos directly onto the window |
+| Undo/Redo | 50-level parameter history |
+| Settings Persistence | Slider values saved between sessions |
 
 ## How It Works
 
 ```
-┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  Video Input      │────>│  MediaPipe        │────>│  RBF Warp         │────>│  Display          │
-│                  │     │  FaceLandmarker   │     │  Engine           │     │  (PyQt5)          │
-│  cv2.VideoCapture│     │  478 3D landmarks │     │                  │     │                  │
-│  webcam or file  │     │  + One-Euro       │     │  TPS interpolation│     │  A/B split view  │
-│                  │     │  temporal filter  │     │  cv2.remap cubic  │     │  FPS counter     │
-└──────────────────┘     └──────────────────┘     └──────────────────┘     └──────────────────┘
+┌──────────────┐    ┌───────────────┐    ┌───────────────┐    ┌──────────────┐
+│  Input Frame  │───>│  MediaPipe     │───>│  TPS Warp      │───>│  Post-Warp    │
+│  (RGB)        │    │  478 Landmarks │    │  (GPU/CPU)     │    │  Effects      │
+│               │    │  + One-Euro    │    │  ROI-isolated  │    │              │
+│               │    │  filtering     │    │  + Seamless    │    │  BiSeNet     │
+│               │    │               │    │  Clone         │    │  Parsing     │
+└──────────────┘    └───────────────┘    └───────────────┘    └──────┬───────┘
+                                                                      │
+                    ┌───────────────┐    ┌───────────────┐           │
+                    │  Output Frame  │<───│  Skin Smooth   │<──────────┘
+                    │  (RGB)        │    │  Tone Even     │
+                    │               │    │  Teeth Whiten  │
+                    │               │    │  Eye Sharpen   │
+                    │               │    │  Lip Color     │
+                    └──────────────┘    └───────────────┘
+
+Video Mode Only:
+┌──────────────────────────────────────────────┐
+│  Optical Flow Propagator                      │
+│  Keyframe (every 4 frames) → full TPS solve  │
+│  Interim frames → Farneback flow warp of     │
+│  cached displacement field                    │
+└──────────────────────────────────────────────┘
 ```
 
-**Pipeline per frame:**
+## Usage
 
-1. **Landmark Detection** — MediaPipe Face Landmarker (Tasks API, `face_landmarker.task` model) detects 478 3D face landmarks
-2. **Temporal Smoothing** — One-Euro adaptive filter stabilizes landmarks across frames, eliminating inter-frame jitter via adaptive cutoff frequency
-3. **Displacement Computation** — Jaw (9 pts), cheek (12 pts), chin (15 pts), and contour landmarks are shifted toward face center proportional to slider values. Nose bridge and forehead landmarks are anchored. 8 edge anchors prevent border distortion
-4. **RBF Interpolation** — `scipy.interpolate.RBFInterpolator` with thin-plate spline kernel creates a smooth continuous displacement field from sparse control points, computed at 1/4 resolution then bicubic-upscaled
-5. **Gaussian Smoothing** — 7x7 Gaussian blur on the displacement field for artifact-free transitions
-6. **Remap** — `cv2.remap` with `INTER_CUBIC` interpolation and `BORDER_REFLECT_101` applies the final warp
+### GUI Mode
 
-## Prerequisites
+```bash
+python FaceSlim_v1.py
+```
 
-| Requirement | Details |
-|-------------|---------|
-| Python | 3.9 – 3.12 (MediaPipe does not ship 3.13 wheels) |
-| OS | Windows 10/11, macOS, Linux |
-| GPU | Not required — CPU inference via XNNPACK. NVIDIA GPU improves OpenCV performance |
-| FFmpeg | Optional — required only for audio preservation during video export |
-| Internet | Required on first run only to download the 3.7 MB face landmarker model |
-| Admin | Not required |
+The interface has three tabs: **Reshape** (sliders for all effects), **Presets** (built-in/custom preset management), and **Export** (video export, screenshots, batch, GIF).
+
+### CLI Mode
+
+```bash
+# Single image with preset
+python FaceSlim_v1.py --input photo.jpg --preset Moderate
+
+# AI beauty only
+python FaceSlim_v1.py --input photo.jpg --preset Beauty
+
+# Full glamour (reshaping + beauty)
+python FaceSlim_v1.py --input photo.jpg --preset Glamour
+
+# Custom parameters
+python FaceSlim_v1.py --input video.mp4 --jaw 50 --eye-enlarge 30 --lip-plump 20 --skin-smooth 40
+
+# Batch folder processing
+python FaceSlim_v1.py --input ./photos/ --output ./results/ --preset Strong
+
+# Multi-face processing
+python FaceSlim_v1.py --input group.jpg --faces 3 --preset "Full Sculpt"
+
+# List available presets
+python FaceSlim_v1.py --list-presets
+```
+
+### CLI Arguments
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `--input`, `-i` | path(s) | Input image(s), video(s), or folder(s) |
+| `--output`, `-o` | path | Output directory (default: `faceslim_output/`) |
+| `--preset`, `-p` | string | Named preset (built-in or custom) |
+| `--jaw` | 0-100 | Jawline slimming |
+| `--cheeks` | 0-100 | Cheek slimming |
+| `--chin` | 0-100 | Chin reshaping |
+| `--face-width` | 0-100 | Face width reduction |
+| `--forehead` | 0-100 | Forehead narrowing |
+| `--nose` | 0-100 | Nose slimming |
+| `--eye-enlarge` | 0-100 | Eye enlargement |
+| `--lip-plump` | 0-100 | Lip plumping |
+| `--skin-smooth` | 0-100 | AI skin smoothing |
+| `--skin-tone-even` | 0-100 | AI skin tone evening |
+| `--teeth-whiten` | 0-100 | AI teeth whitening |
+| `--eye-sharpen` | 0-100 | AI eye sharpening |
+| `--lip-color` | 0-100 | AI lip color enhancement |
+| `--smoothing` | 10-100 | Warp field smoothness |
+| `--faces` | 1-5 | Max faces to process |
+| `--list-presets` | flag | List all available presets |
+
+### Built-In Presets
+
+| Preset | Focus | Key Parameters |
+|--------|-------|----------------|
+| Subtle | Light face slimming | jaw=15, cheeks=10 |
+| Moderate | Balanced slimming | jaw=35, cheeks=25, chin=15 |
+| Strong | Aggressive slimming | jaw=60, cheeks=45, chin=30 |
+| V-Shape | Jaw-focused sculpting | jaw=70, chin=40 |
+| Oval | Rounded face shape | jaw=40, cheeks=35, face_width=30 |
+| Slim Nose | Nose only | nose=50 |
+| Full Sculpt | All reshaping combined | jaw=50, cheeks=40, nose=30 |
+| Beauty | AI beautification only | skin_smooth=40, teeth=20, eyes=30, lips=20 |
+| Glamour | Full reshaping + beautification | All effects combined |
 
 ## Configuration
 
-All settings are persisted automatically via `QSettings` under the `FaceSlim/FaceSlim` key:
+Custom presets are stored as JSON in:
 
-| Setting | Registry/Config Key | Type |
-|---------|-------------------|------|
-| Jaw Slimming | `s/jaw` | int 0–100 |
-| Cheek Slimming | `s/cheeks` | int 0–100 |
-| Chin Reshape | `s/chin` | int 0–100 |
-| Overall Width | `s/face_width` | int 0–100 |
-| Warp Smoothing | `s/smooth` | int 10–100 |
+| OS | Location |
+|----|----------|
+| Windows | `%APPDATA%\.faceslim\presets\` |
+| macOS/Linux | `~/.faceslim/presets/` |
 
-On Windows these are stored in the registry under `HKCU\Software\FaceSlim`. On macOS/Linux they use the platform-native QSettings backend.
+Slider values persist between sessions via Qt settings. Crash logs are written to `crash.log` in the application directory.
 
-## File Structure
+## Models (Auto-Downloaded)
 
-```
-FaceSlim/
-├── FaceSlim.py              # Main application (single-file, turnkey)
-├── face_landmarker.task     # MediaPipe model (auto-downloaded on first run)
-├── crash.log                # Created on unhandled exceptions
-├── README.md
-└── LICENSE
-```
+| Model | Size | Source | Purpose |
+|-------|------|--------|---------|
+| `face_landmarker.task` | ~3.7 MB | Google MediaPipe | 478-point face landmarks |
+| `bisenet_face_parsing.onnx` | ~50 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | 19-class face segmentation (CelebAMask-HQ) |
 
-## Troubleshooting
+Both models are downloaded automatically on first run. If the BiSeNet model fails to download, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
 
-| Problem | Solution |
-|---------|----------|
-| "Failed to open video source" | Webcam in use by another app, or video file uses unsupported codec. Close other camera apps or try a different file |
-| Low FPS / sluggish preview | RBF computation is CPU-bound. Reduce source resolution or close GPU-intensive apps |
-| No audio in exported video | Install [FFmpeg](https://ffmpeg.org/download.html) and ensure it's on your PATH. Without FFmpeg, video exports silently without audio |
-| MediaPipe import errors on Python 3.13 | Downgrade to Python 3.12. MediaPipe doesn't ship 3.13 wheels yet |
-| Model download fails | Download manually from [Google Storage](https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task) and place `face_landmarker.task` next to `FaceSlim.py` |
-| `crash.log` created on launch | Open `crash.log` for the full traceback. Most common cause is a missing or corrupt model file — delete `face_landmarker.task` and relaunch to re-download |
+## Requirements
 
-## Tech Stack
+- **Python 3.9+**
+- **Auto-installed:** PyQt5, OpenCV, MediaPipe, ONNX Runtime, scipy, Pillow
+- **Optional:** PyTorch + CUDA for GPU acceleration (auto-detected)
+- **Optional:** FFmpeg for audio muxing on video exports
 
-| Component | Library | Purpose |
-|-----------|---------|---------|
-| Face Detection | MediaPipe Face Landmarker 0.10.32 (Apache 2.0) | 478 3D landmark detection via Tasks API |
-| Warping | SciPy RBFInterpolator | Thin-plate spline smooth displacement field |
-| Video I/O | OpenCV | Capture, remap with bicubic interpolation, VideoWriter |
-| Temporal Filter | One-Euro Filter | Adaptive low-pass filter on landmark positions |
-| GUI | PyQt5 + Fusion style | Desktop interface with Catppuccin Mocha dark theme |
-| Audio Mux | FFmpeg (optional) | Copies audio track from source to exported video |
+## Supported Formats
 
-## What It Does and Doesn't Do
+| Type | Extensions |
+|------|------------|
+| Images | `.jpg` `.jpeg` `.png` `.bmp` `.tiff` `.tif` `.webp` |
+| Videos | `.mp4` `.avi` `.mov` `.mkv` `.webm` `.wmv` `.flv` `.m4v` |
 
-**Does:**
-- Real-time face landmark detection and smooth warping
-- Adjustable jaw, cheek, chin, and overall width slimming
-- Temporal stabilization to prevent frame-to-frame jitter
-- Export processed video with optional audio preservation
-- Persist settings between sessions
+## FAQ / Troubleshooting
 
-**Doesn't:**
-- Modify skin texture, color, or lighting
-- Apply AI face restoration or enhancement (no GFPGAN/CodeFormer)
-- Process multiple faces simultaneously (single face only)
-- Provide GPU-accelerated warping (CPU RBF interpolation only in v0.1.0)
-- Work offline on first run (needs internet to download model once)
+**BiSeNet model fails to download**
+The app falls back to landmark-based masking automatically. AI beauty effects (skin smooth, teeth whiten, etc.) require the BiSeNet model. You can manually download `resnet18.onnx` from the [face-parsing releases](https://github.com/yakhyo/face-parsing/releases) and rename it to `bisenet_face_parsing.onnx` in the app directory.
+
+**Low FPS in real-time preview**
+Use the Preview Scale dropdown (75% or 50%) in the Quality group. Install PyTorch with CUDA for GPU acceleration. Optical flow propagation kicks in automatically for video, computing full TPS only every 4th frame.
+
+**Warp affects the background**
+Increase the Background Protection slider. At 70+ (default), warping is confined to the face ROI and blended back with seamless clone.
+
+**Video export has no audio**
+Install FFmpeg and make sure it's on your PATH. FaceSlim automatically muxes audio from the original file when FFmpeg is available.
+
+**Faces not detected**
+Ensure the face is reasonably front-facing and well-lit. MediaPipe requires a minimum face size — try loading a higher resolution source. For multi-face scenes, increase Max Faces (up to 5).
+
+**Crash on startup**
+Check `crash.log` in the application directory. Common causes: incompatible Python version (<3.9), missing system libraries for PyQt5 on Linux (install `libxcb-xinerama0`), or corrupted model files (delete `.task`/`.onnx` files and relaunch to re-download).
 
 ## License
 
-MIT License. See `LICENSE` for details.
-
-Issues and PRs welcome.
+MIT License. See [LICENSE](LICENSE) for details. Issues and PRs welcome.
