@@ -8,8 +8,6 @@
 
 > AI-powered face slimming, reshaping, and beautification suite with real-time preview, GPU acceleration, and CLI batch processing. Zero configuration — auto-installs all dependencies and downloads models on first run.
 
-![Screenshot](screenshot.png)
-
 ## Quick Start
 
 ```bash
@@ -69,27 +67,26 @@ Everything is automatic. On first launch, FaceSlim bootstraps PyQt5, OpenCV, Med
 
 ```
 ┌──────────────┐    ┌───────────────┐    ┌───────────────┐    ┌──────────────┐
-│  Input Frame  │───>│  MediaPipe     │───>│  TPS Warp      │───>│  Post-Warp    │
-│  (RGB)        │    │  478 Landmarks │    │  (GPU/CPU)     │    │  Effects      │
-│               │    │  + One-Euro    │    │  ROI-isolated  │    │              │
-│               │    │  filtering     │    │  + Seamless    │    │  BiSeNet     │
-│               │    │               │    │  Clone         │    │  Parsing     │
+│ Input Frame  │───>│  MediaPipe    │───>│  TPS Warp     │───>│  Post-Warp   │
+│  (RGB)       │    │ 478 Landmarks │    │  (GPU/CPU)    │    │  Effects     │
+│              │    │  + One-Euro   │    │  ROI-isolated │    │              │
+│              │    │  filtering    │    │  + Seamless   │    │  BiSeNet     │
+│              │    │               │    │  Clone        │    │  Parsing     │
 └──────────────┘    └───────────────┘    └───────────────┘    └──────┬───────┘
-                                                                      │
                     ┌───────────────┐    ┌───────────────┐           │
-                    │  Output Frame  │<───│  Skin Smooth   │<──────────┘
-                    │  (RGB)        │    │  Tone Even     │
-                    │               │    │  Teeth Whiten  │
-                    │               │    │  Eye Sharpen   │
-                    │               │    │  Lip Color     │
-                    └──────────────┘    └───────────────┘
+                    │  Output Frame │<───│  Skin Smooth  │<──────────┘
+                    │  (RGB)        │    │  Tone Even    │
+                    │               │    │  Teeth Whiten │
+                    │               │    │  Eye Sharpen  │
+                    │               │    │  Lip Color    │
+                    └───────────────┘    └───────────────┘
 
 Video Mode Only:
 ┌──────────────────────────────────────────────┐
-│  Optical Flow Propagator                      │
+│  Optical Flow Propagator                     │
 │  Keyframe (every 4 frames) → full TPS solve  │
 │  Interim frames → Farneback flow warp of     │
-│  cached displacement field                    │
+│  cached displacement field                   │
 └──────────────────────────────────────────────┘
 ```
 
