@@ -9,6 +9,26 @@ Turnkey: auto-installs all dependencies and downloads model on first run.
 
 import sys, os, subprocess, time, json, math, traceback, urllib.request
 from collections import deque
+from pathlib import Path
+
+
+# codex-branding:start
+def _branding_icon_path() -> Path:
+    candidates = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "icon.png")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "icon.png")
+    current = Path(__file__).resolve()
+    candidates.extend([current.parent / "icon.png", current.parent.parent / "icon.png", current.parent.parent.parent / "icon.png"])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path("icon.png")
+# codex-branding:end
+
 
 # -- Auto-Bootstrap --
 def _bootstrap():
@@ -55,7 +75,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QPalette, QColor, QCursor
+from PyQt5.QtGui import QImage, QPixmap, QPalette, QColor, QCursor, QIcon
 
 VERSION = "0.2.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -699,6 +719,8 @@ def main():
         print(f"ERROR: Could not obtain model.\nDownload from:\n  {MODEL_URL}\nPlace at:\n  {MODEL_PATH}")
         sys.exit(1)
     app = QApplication(sys.argv)
+    branding_icon = QIcon(str(_branding_icon_path()))
+    app.setWindowIcon(branding_icon)
     app.setStyle("Fusion"); app.setStyleSheet(DARK_STYLE)
     pal = QPalette()
     for role, col in [(QPalette.ColorRole.Window,"#1e1e2e"),(QPalette.ColorRole.WindowText,"#cdd6f4"),
