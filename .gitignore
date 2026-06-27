@@ -1,5 +1,24 @@
 CLAUDE.md
 
-# Markdown files local-only (except README)
+# Markdown files local-only (except release docs)
 *.md
 !README.md
+!CHANGELOG.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.spec.bak
+
+# Downloaded models and logs
+face_landmarker.task
+bisenet_face_parsing.onnx
+*.tmp
+crash.log
+faceslim_output/

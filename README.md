@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.4.1-blue)
+![Version](https://img.shields.io/badge/version-1.5.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -13,10 +13,12 @@
 ```bash
 git clone https://github.com/SysAdminDoc/FaceSlim.git
 cd FaceSlim
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
 python FaceSlim_v1.py
 ```
 
-Everything is automatic. On first launch, FaceSlim bootstraps PyQt5, OpenCV, MediaPipe, ONNX Runtime, scipy, and Pillow, then downloads the face landmarker (~3.7 MB) and BiSeNet parsing model (~50 MB).
+On first launch, FaceSlim downloads the face landmarker (~3.7 MB) and BiSeNet parsing model (~50 MB). Python dependencies are installed through `requirements.txt`.
 
 ## Features
 
@@ -42,6 +44,9 @@ Everything is automatic. On first launch, FaceSlim bootstraps PyQt5, OpenCV, Med
 | Teeth Whitening | Brightens teeth naturally | HSV saturation/brightness on mouth interior only |
 | Eye Sharpen | Sharpens iris and brow detail | Unsharp mask on eye/brow parsing region |
 | Lip Color | Boosts lip saturation and warmth | HSV saturation boost on lip parsing region |
+| Under-Eye Smooth | Smooths the infraorbital region separately | Landmark-guided under-eye mask + skin smoother |
+| Hair Controls | Hue, saturation, and density hints | BiSeNet hair-class masking |
+| Makeup Overlays | Blush, lip gloss, and eye shadow | Procedural opacity-controlled masks |
 
 ### Pipeline & Performance
 
@@ -52,11 +57,16 @@ Everything is automatic. On first launch, FaceSlim bootstraps PyQt5, OpenCV, Med
 | Temporal Mask Smoothing | EMA filter prevents parsing mask flicker on video |
 | Optical Flow Propagation | Warp displacement propagation between TPS keyframes |
 | GPU Acceleration | PyTorch TPS warping on CUDA (auto-detected) |
+| DirectML Face Parsing | ONNX Runtime DirectML provider on Windows when available |
 | Multi-Face Support | Up to 5 simultaneous faces with per-face caching |
+| Per-Face Overrides | CLI/manifest can apply different presets or values per face index |
 | Real-Time Preview | Webcam/video with live slider adjustment |
 | A/B Compare | Draggable split-screen before/after overlay |
 | Batch Processing | Folder/multi-file image and video processing |
+| Batch Manifest | JSON jobs with per-file preset, face overrides, output, watermark, and compare settings |
 | CLI Mode | Headless with presets and per-param control |
+| Metadata Preservation | Image exports preserve EXIF/ICC metadata by default |
+| Disclosure Watermark | Optional exported media badge declaring AI modification |
 | Preset System | 9 built-in + unlimited custom presets (JSON) |
 | Before/After GIF | One-click animated comparison export |
 | Drag & Drop | Drop images/videos directly onto the window |
@@ -121,6 +131,15 @@ python FaceSlim_v1.py --input ./photos/ --output ./results/ --preset Strong
 # Multi-face processing
 python FaceSlim_v1.py --input group.jpg --faces 3 --preset "Full Sculpt"
 
+# Per-face overrides
+python FaceSlim_v1.py --input group.jpg --faces 3 --face-preset 1=Subtle --face-param 2:jaw=45
+
+# Batch manifest with per-file settings
+python FaceSlim_v1.py --manifest batch.json --output ./results/
+
+# Split-screen video export with disclosure watermark
+python FaceSlim_v1.py --input video.mp4 --preset Glamour --video-compare split --watermark
+
 # List available presets
 python FaceSlim_v1.py --list-presets
 ```
@@ -145,9 +164,47 @@ python FaceSlim_v1.py --list-presets
 | `--teeth-whiten` | 0-100 | AI teeth whitening |
 | `--eye-sharpen` | 0-100 | AI eye sharpening |
 | `--lip-color` | 0-100 | AI lip color enhancement |
+| `--under-eye` | 0-100 | Dedicated under-eye smoothing |
+| `--hair-hue` | 0-100 | Hair hue shift |
+| `--hair-saturation` | 0-100 | Hair saturation boost |
+| `--hair-density` | 0-100 | Hair density hint |
+| `--blush` | 0-100 | Procedural blush overlay |
+| `--lip-gloss` | 0-100 | Lip gloss overlay |
+| `--eye-shadow` | 0-100 | Eye shadow overlay |
 | `--smoothing` | 10-100 | Warp field smoothness |
+| `--temporal` | 0-100 | Temporal landmark smoothing |
+| `--bg-protect` | 0-100 | Background protection |
 | `--faces` | 1-5 | Max faces to process |
+| `--face-preset` | `FACE=PRESET` | Apply a preset to one face index |
+| `--face-param` | `FACE:key=value` | Override one parameter for one face index |
+| `--manifest` | path | JSON batch manifest |
+| `--watermark` | flag | Add AI modification disclosure watermark |
+| `--strip-metadata` | flag | Do not preserve image EXIF/ICC metadata |
+| `--video-compare` | `none`, `split`, `side_by_side` | Export processed, split-screen, or side-by-side video |
 | `--list-presets` | flag | List all available presets |
+
+### Batch Manifest
+
+```json
+{
+  "preset": "Moderate",
+  "faces": 3,
+  "watermark": true,
+  "video_compare": "split",
+  "files": [
+    {
+      "input": "photos/group.jpg",
+      "params": {"skin_smooth": 35},
+      "face_params": {"2": {"jaw": 45, "cheeks": 20}}
+    },
+    {
+      "input": "clips/demo.mp4",
+      "preset": "Glamour",
+      "output": "results/demo_split.mp4"
+    }
+  ]
+}
+```
 
 ### Built-In Presets
 
@@ -186,9 +243,18 @@ Both models are downloaded automatically on first run. If the BiSeNet model fail
 ## Requirements
 
 - **Python 3.9+**
-- **Auto-installed:** PyQt5, OpenCV, MediaPipe, ONNX Runtime, scipy, Pillow
+- **Install:** `python -m pip install -r requirements.txt`
 - **Optional:** PyTorch + CUDA for GPU acceleration (auto-detected)
 - **Optional:** FFmpeg for audio muxing on video exports
+
+## Build
+
+```bash
+python -m pip install -r requirements.txt
+pyinstaller FaceSlim.spec --noconfirm --clean
+```
+
+The Windows executable is emitted at `dist/FaceSlim.exe`. The spec includes a multiprocessing freeze guard to prevent frozen MediaPipe/OpenCV worker relaunch loops.
 
 ## Supported Formats
 

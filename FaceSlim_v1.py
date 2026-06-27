@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.4.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.5.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -13,6 +13,9 @@ Phase 3: Lip plumping, eye sharpening, skin tone evening, lip color
 Turnkey: auto-installs all dependencies and downloads models on first run.
 """
 
+import multiprocessing
+multiprocessing.freeze_support()
+
 import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob
 from collections import deque
 from pathlib import Path
@@ -23,28 +26,23 @@ from pathlib import Path
 def _bootstrap():
     if sys.version_info < (3, 9):
         print("Python 3.9+ required"); sys.exit(1)
-    try:
-        import pip
-    except ImportError:
-        subprocess.check_call([sys.executable, '-m', 'ensurepip', '--default-pip'])
+    if getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"):
+        return
     required = {
         'PyQt5': 'PyQt5', 'cv2': 'opencv-python', 'mediapipe': 'mediapipe',
         'numpy': 'numpy', 'scipy': 'scipy', 'PIL': 'Pillow',
         'onnxruntime': 'onnxruntime',
     }
+    missing = []
     for mod, pkg in required.items():
         try:
             __import__(mod)
         except ImportError:
-            print(f"  Installing {pkg}...")
-            for flags in [[], ['--user'], ['--break-system-packages']]:
-                try:
-                    subprocess.check_call(
-                        [sys.executable, '-m', 'pip', 'install', pkg, '-q'] + flags,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    break
-                except subprocess.CalledProcessError:
-                    continue
+            missing.append(pkg)
+    if missing:
+        print("Missing dependencies: " + ", ".join(sorted(missing)))
+        print("Install with: python -m pip install -r requirements.txt")
+        sys.exit(1)
 
 _bootstrap()
 
@@ -54,7 +52,7 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 from scipy.interpolate import RBFInterpolator
-from PIL import Image as PILImage
+from PIL import Image as PILImage, PngImagePlugin
 import onnxruntime as ort
 
 # -- Qt Imports (must precede QThread subclasses) --
@@ -89,7 +87,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -254,7 +252,18 @@ DEFAULT_PARAMS = {'jaw': 0, 'cheeks': 0, 'chin': 0, 'face_width': 0,
                   'forehead': 0, 'nose': 0, 'eye_enlarge': 0, 'lip_plump': 0,
                   'smoothing': 50, 'temporal': 50, 'bg_protect': 70,
                   'skin_smooth': 0, 'teeth_whiten': 0, 'eye_sharpen': 0,
-                  'skin_tone_even': 0, 'lip_color': 0}
+                  'skin_tone_even': 0, 'lip_color': 0, 'under_eye': 0,
+                  'hair_hue': 0, 'hair_saturation': 0, 'hair_density': 0,
+                  'blush': 0, 'lip_gloss': 0, 'eye_shadow': 0}
+
+EFFECT_PARAM_KEYS = (
+    'jaw', 'cheeks', 'chin', 'face_width', 'forehead', 'nose', 'eye_enlarge',
+    'lip_plump', 'skin_smooth', 'teeth_whiten', 'eye_sharpen',
+    'skin_tone_even', 'lip_color', 'under_eye', 'hair_hue',
+    'hair_saturation', 'hair_density', 'blush', 'lip_gloss', 'eye_shadow'
+)
+
+CLI_PARAM_KEYS = EFFECT_PARAM_KEYS + ('smoothing', 'temporal', 'bg_protect')
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ONE-EURO FILTER
@@ -305,8 +314,13 @@ class FaceParsingEngine:
     _INPUT_SIZE = 512
 
     def __init__(self):
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if USE_GPU else ['CPUExecutionProvider']
         available = ort.get_available_providers()
+        providers = []
+        if USE_GPU and 'CUDAExecutionProvider' in available:
+            providers.append('CUDAExecutionProvider')
+        if sys.platform.startswith('win') and 'DmlExecutionProvider' in available:
+            providers.append('DmlExecutionProvider')
+        providers.append('CPUExecutionProvider')
         providers = [p for p in providers if p in available]
         self.session = ort.InferenceSession(BISENET_PATH, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
@@ -504,6 +518,310 @@ def apply_lip_color(frame, parsing, strength):
     mask_3 = mask[:, :, np.newaxis]
     blended = result.astype(np.float32) * mask_3 + frame.astype(np.float32) * (1.0 - mask_3)
     return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def _mask_to_blend(mask):
+    if mask is None:
+        return None
+    return np.clip(mask.astype(np.float32), 0.0, 1.0)[:, :, np.newaxis]
+
+
+def apply_color_overlay(frame, mask, color_rgb, opacity):
+    if opacity <= 0 or mask is None or mask.max() < 0.01:
+        return frame
+    strength = min(max(opacity / 100.0, 0.0), 1.0)
+    mask_3 = _mask_to_blend(mask) * strength
+    color = np.zeros_like(frame, dtype=np.float32)
+    color[:, :] = np.array(color_rgb, dtype=np.float32)
+    blended = frame.astype(np.float32) * (1.0 - mask_3) + color * mask_3
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def make_under_eye_mask(lms, roi, shape, parsing=None):
+    rx1, ry1, _, _ = roi
+    h, w = shape
+    offset = np.array([rx1, ry1], dtype=np.float64)
+    face_h = max(24.0, float(np.ptp(lms[:min(468, len(lms)), 1])))
+    mask = np.zeros((h, w), dtype=np.float32)
+    for contour in (LEFT_EYE_CONTOUR, RIGHT_EYE_CONTOUR):
+        pts = [lms[i] - offset for i in contour if i < len(lms)]
+        if len(pts) < 4:
+            continue
+        pts = np.array(pts, dtype=np.float64)
+        center_y = float(np.mean(pts[:, 1]))
+        lower = pts[pts[:, 1] >= center_y]
+        if len(lower) < 2:
+            lower = pts
+        lower = lower[np.argsort(lower[:, 0])]
+        drop = np.array([0.0, face_h * 0.08], dtype=np.float64)
+        poly = np.vstack([lower, lower[::-1] + drop]).astype(np.int32)
+        cv2.fillPoly(mask, [poly], 1.0, cv2.LINE_AA)
+    if parsing is not None:
+        skin = np.isin(parsing, list(SKIN_SMOOTH_LABELS)).astype(np.float32)
+        mask *= skin
+    return cv2.GaussianBlur(mask, (13, 13), 0)
+
+
+def make_blush_mask(lms, roi, shape):
+    rx1, ry1, _, _ = roi
+    h, w = shape
+    offset = np.array([rx1, ry1], dtype=np.float64)
+    mask = np.zeros((h, w), dtype=np.float32)
+    for cheek in (LEFT_CHEEK, RIGHT_CHEEK):
+        pts = [lms[i] - offset for i in cheek if i < len(lms)]
+        if len(pts) < 3:
+            continue
+        pts = np.array(pts, dtype=np.float64)
+        center = np.mean(pts, axis=0).astype(int)
+        radius_x = max(10, int(np.ptp(pts[:, 0]) * 0.45))
+        radius_y = max(8, int(np.ptp(pts[:, 1]) * 0.55))
+        cv2.ellipse(mask, tuple(center), (radius_x, radius_y), 0, 0, 360, 1.0, -1, cv2.LINE_AA)
+    return cv2.GaussianBlur(mask, (25, 25), 0)
+
+
+def make_eye_shadow_mask(parsing):
+    if parsing is None:
+        return None
+    mask = np.isin(parsing, [PARSE_L_BROW, PARSE_R_BROW, PARSE_L_EYE, PARSE_R_EYE]).astype(np.float32)
+    if mask.max() < 0.01:
+        return None
+    dilated = cv2.dilate(mask, np.ones((9, 9), np.uint8), iterations=1)
+    return cv2.GaussianBlur(dilated, (15, 15), 0)
+
+
+def apply_hair_controls(frame, parsing, hue_shift, saturation, density):
+    if parsing is None or (hue_shift <= 0 and saturation <= 0 and density <= 0):
+        return frame
+    mask = (parsing == PARSE_HAIR).astype(np.float32)
+    mask = cv2.GaussianBlur(mask, (9, 9), 0)
+    if mask.max() < 0.01:
+        return frame
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV).astype(np.float32)
+    if hue_shift > 0:
+        hsv[:, :, 0] = (hsv[:, :, 0] + (hue_shift / 100.0) * 36.0 * mask) % 180.0
+    if saturation > 0:
+        hsv[:, :, 1] = hsv[:, :, 1] + (saturation / 100.0) * 55.0 * mask
+    if density > 0:
+        hsv[:, :, 2] = hsv[:, :, 2] * (1.0 - (density / 100.0) * 0.28 * mask)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2], 0, 255)
+    adjusted = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+    mask_3 = _mask_to_blend(mask)
+    blended = adjusted.astype(np.float32) * mask_3 + frame.astype(np.float32) * (1.0 - mask_3)
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def apply_lip_gloss(frame, parsing, strength):
+    if strength <= 0 or parsing is None:
+        return frame
+    mask = np.isin(parsing, list(LIP_LABELS)).astype(np.float32)
+    mask = cv2.GaussianBlur(mask, (7, 7), 0)
+    if mask.max() < 0.01:
+        return frame
+    s = strength / 100.0
+    lab = cv2.cvtColor(frame, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab[:, :, 0] = np.clip(lab[:, :, 0] + 20.0 * s * mask, 0, 255)
+    glossy = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return apply_color_overlay(glossy, mask, (255, 215, 220), strength * 0.12)
+
+
+def apply_disclosure_watermark(frame, enabled=True):
+    if not enabled:
+        return frame
+    out = frame.copy()
+    text = "AI modified"
+    h, w = out.shape[:2]
+    scale = max(0.45, min(w, h) / 900.0)
+    thick = max(1, int(round(scale * 2)))
+    (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+    pad = max(6, int(8 * scale))
+    x1 = max(0, w - tw - pad * 2 - 10)
+    y1 = max(0, h - th - base - pad * 2 - 10)
+    overlay = out.copy()
+    cv2.rectangle(overlay, (x1, y1), (w - 10, h - 10), (17, 17, 27), -1)
+    out = cv2.addWeighted(overlay, 0.68, out, 0.32, 0)
+    cv2.putText(out, text, (x1 + pad, h - 10 - pad - base),
+                cv2.FONT_HERSHEY_SIMPLEX, scale, (205, 214, 244), thick, cv2.LINE_AA)
+    return out
+
+
+def compose_compare_frame(original, processed, mode):
+    if mode == 'side_by_side':
+        return np.concatenate([original, processed], axis=1)
+    if mode == 'split':
+        h, w = original.shape[:2]
+        sx = max(1, min(w - 1, w // 2))
+        out = np.empty_like(processed)
+        out[:, :sx] = original[:, :sx]
+        out[:, sx:] = processed[:, sx:]
+        cv2.line(out, (sx, 0), (sx, h), (203, 166, 247), 3)
+        return out
+    return processed
+
+
+def video_output_size(width, height, mode):
+    if mode == 'side_by_side':
+        return width * 2, height
+    return width, height
+
+
+def save_rgb_image(output_path, rgb, source_path=None, preserve_metadata=True):
+    ext = os.path.splitext(output_path)[1].lower()
+    if not ext:
+        output_path += ".png"
+        ext = ".png"
+    image = PILImage.fromarray(rgb)
+    save_kwargs = {}
+    png_info = None
+    if preserve_metadata and source_path and os.path.exists(source_path):
+        try:
+            with PILImage.open(source_path) as src:
+                if src.info.get("exif"):
+                    save_kwargs["exif"] = src.info["exif"]
+                if src.info.get("icc_profile"):
+                    save_kwargs["icc_profile"] = src.info["icc_profile"]
+                if ext == ".png":
+                    png_info = PngImagePlugin.PngInfo()
+                    for key, value in src.info.items():
+                        if isinstance(key, str) and isinstance(value, str):
+                            png_info.add_text(key, value)
+        except Exception as e:
+            print(f"Metadata preserve warning: {e}")
+    if png_info is not None:
+        save_kwargs["pnginfo"] = png_info
+    if ext in (".jpg", ".jpeg"):
+        save_kwargs.setdefault("quality", 95)
+        save_kwargs.setdefault("subsampling", 1)
+    image.save(output_path, **save_kwargs)
+    return output_path
+
+
+def resolve_preset(name):
+    if not name:
+        return {}
+    if name in BUILT_IN_PRESETS:
+        return BUILT_IN_PRESETS[name].copy()
+    custom = PresetManager.list_custom()
+    if name in custom:
+        return custom[name].copy()
+    raise ValueError(f"Unknown preset: {name}")
+
+
+def params_from_preset_and_overrides(preset_name=None, overrides=None):
+    params = DEFAULT_PARAMS.copy()
+    if preset_name:
+        params.update(resolve_preset(preset_name))
+    if overrides:
+        for key, value in overrides.items():
+            if key in CLI_PARAM_KEYS:
+                params[key] = int(value)
+    return params
+
+
+def parse_param_overrides(raw):
+    overrides = {}
+    for item in raw or []:
+        if "=" not in item:
+            raise ValueError(f"Expected key=value, got {item}")
+        key, value = item.split("=", 1)
+        key = key.strip().replace("-", "_")
+        if key not in CLI_PARAM_KEYS:
+            raise ValueError(f"Unknown parameter: {key}")
+        overrides[key] = int(value)
+    return overrides
+
+
+def parse_face_overrides(face_presets=None, face_params=None):
+    face_overrides = {}
+    for item in face_presets or []:
+        if "=" not in item:
+            raise ValueError(f"Expected FACE=PRESET, got {item}")
+        face, preset = item.split("=", 1)
+        idx = max(0, int(face) - 1)
+        face_overrides.setdefault(idx, {}).update(resolve_preset(preset.strip()))
+    for item in face_params or []:
+        if ":" not in item or "=" not in item:
+            raise ValueError(f"Expected FACE:key=value, got {item}")
+        face, rest = item.split(":", 1)
+        key, value = rest.split("=", 1)
+        key = key.strip().replace("-", "_")
+        if key not in CLI_PARAM_KEYS:
+            raise ValueError(f"Unknown parameter: {key}")
+        idx = max(0, int(face) - 1)
+        face_overrides.setdefault(idx, {})[key] = int(value)
+    return face_overrides
+
+
+def media_files_from_paths(paths):
+    inputs = []
+    for inp in paths or []:
+        if os.path.isdir(inp):
+            for f in os.listdir(inp):
+                if os.path.splitext(f)[1].lower() in IMAGE_EXTS | VIDEO_EXTS:
+                    inputs.append(os.path.join(inp, f))
+        elif os.path.isfile(inp):
+            inputs.append(inp)
+        else:
+            print(f"Warning: {inp} not found, skipping")
+    return sorted(inputs)
+
+
+def _manifest_path(base_dir, path_value):
+    if not path_value:
+        return path_value
+    return path_value if os.path.isabs(path_value) else os.path.abspath(os.path.join(base_dir, path_value))
+
+
+def load_batch_manifest(manifest_path, fallback_output=None):
+    with open(manifest_path, encoding="utf-8-sig") as f:
+        data = json.load(f)
+    base_dir = os.path.dirname(os.path.abspath(manifest_path))
+    default_params = params_from_preset_and_overrides(data.get("preset"), data.get("params"))
+    default_face_params = data.get("face_params") or {}
+    if default_face_params:
+        default_params["face_params"] = {int(k) - 1 if str(k).isdigit() else k: v
+                                         for k, v in default_face_params.items()}
+    default_output = _manifest_path(base_dir, data.get("output") or fallback_output or "faceslim_output")
+    jobs = []
+    entries = data.get("files") or data.get("jobs") or []
+    for entry in entries:
+        if isinstance(entry, str):
+            entry = {"input": entry}
+        inp = _manifest_path(base_dir, entry.get("input") or entry.get("path"))
+        params = default_params.copy()
+        if entry.get("preset"):
+            params.update(resolve_preset(entry["preset"]))
+        if entry.get("params"):
+            params.update({k: int(v) for k, v in entry["params"].items() if k in CLI_PARAM_KEYS})
+        if entry.get("face_params"):
+            params["face_params"] = {int(k) - 1 if str(k).isdigit() else k: v
+                                     for k, v in entry["face_params"].items()}
+        out_dir = _manifest_path(base_dir, entry.get("output_dir") or default_output)
+        jobs.append({
+            "input": inp,
+            "output_dir": out_dir,
+            "output": _manifest_path(base_dir, entry.get("output")) if entry.get("output") else None,
+            "params": params,
+            "max_faces": int(entry.get("faces", data.get("faces", 1))),
+            "watermark": bool(entry.get("watermark", data.get("watermark", False))),
+            "preserve_metadata": bool(entry.get("preserve_metadata", data.get("preserve_metadata", True))),
+            "compare_mode": entry.get("video_compare", data.get("video_compare", "none")),
+        })
+    return jobs
+
+
+def jobs_from_files(files, output_dir, params, max_faces=1, watermark=False,
+                    preserve_metadata=True, compare_mode='none'):
+    return [{
+        "input": f,
+        "output_dir": output_dir,
+        "output": None,
+        "params": params.copy(),
+        "max_faces": max_faces,
+        "watermark": watermark,
+        "preserve_metadata": preserve_metadata,
+        "compare_mode": compare_mode,
+    } for f in files]
 
 
 class TemporalMaskSmoother:
@@ -785,6 +1103,18 @@ class FaceWarpEngine:
     def _cache_key(self, src, tgt):
         return ((tgt - src) / 5.0).astype(np.int32).tobytes()
 
+    def _params_for_face(self, params, face_idx):
+        face_params = params.get('face_params') or {}
+        override = face_params.get(face_idx)
+        if override is None:
+            override = face_params.get(str(face_idx + 1))
+        if not override:
+            return params
+        merged = params.copy()
+        merged.update(override)
+        merged.pop('face_params', None)
+        return merged
+
     # ── GPU TPS ─────────────────────────────────────────────────
     def _tps_kernel(self, src_t, eval_t):
         diff = eval_t.unsqueeze(1) - src_t.unsqueeze(0)
@@ -984,15 +1314,13 @@ class FaceWarpEngine:
     def warp(self, frame, faces, params):
         """Warp all detected faces in frame. faces = list of (landmarks, conf)."""
         result = frame.copy()
-        bg_protect = params.get('bg_protect', 0)
-        skin_smooth = params.get('skin_smooth', 0)
-        teeth_whiten = params.get('teeth_whiten', 0)
 
         # ── Optical flow: decide keyframe at frame level (not per-face) ──
         has_any_warp = False
-        for lms, conf in faces:
+        for i, (lms, conf) in enumerate(faces):
+            fp = self._params_for_face(params, i)
             h, w = result.shape[:2]
-            src, tgt = self._compute_control_points(lms, params, h, w)
+            src, tgt = self._compute_control_points(lms, fp, h, w)
             if len(src) >= 4 and np.max(np.linalg.norm(tgt - src, axis=1)) >= 0.5:
                 has_any_warp = True
                 break
@@ -1009,6 +1337,7 @@ class FaceWarpEngine:
         pre_warp = result.copy() if (has_any_warp and not use_flow_this_frame and self.flow_prop is not None) else None
 
         for i, (lms, conf) in enumerate(faces):
+            fp = self._params_for_face(params, i)
             h, w = result.shape[:2]
             cache = self._caches[min(i, len(self._caches)-1)]
 
@@ -1019,25 +1348,37 @@ class FaceWarpEngine:
                 cache.pop(_ck, None)
 
             # Compute warp control points
-            src, tgt = self._compute_control_points(lms, params, h, w)
+            src, tgt = self._compute_control_points(lms, fp, h, w)
             has_warp = len(src) >= 4 and np.max(np.linalg.norm(tgt - src, axis=1)) >= 0.5
 
             # Apply geometric warp if needed (full TPS on keyframes)
             if has_warp and not use_flow_this_frame:
                 try:
+                    bg_protect = fp.get('bg_protect', 0)
                     if bg_protect > 0:
-                        result = self._warp_with_roi(result, lms, src, tgt, params, cache, bg_protect, face_idx=i)
+                        result = self._warp_with_roi(result, lms, src, tgt, fp, cache, bg_protect, face_idx=i)
                     else:
-                        result = self._warp_full_frame(result, src, tgt, params, cache)
+                        result = self._warp_full_frame(result, src, tgt, fp, cache)
                 except Exception as e:
                     print(f"Warp error face {i}: {e}")
 
             # ── Post-warp effects (parsing-based beautification) ──
-            eye_sharpen = params.get('eye_sharpen', 0)
-            skin_tone_even = params.get('skin_tone_even', 0)
-            lip_color = params.get('lip_color', 0)
+            skin_smooth = fp.get('skin_smooth', 0)
+            teeth_whiten = fp.get('teeth_whiten', 0)
+            eye_sharpen = fp.get('eye_sharpen', 0)
+            skin_tone_even = fp.get('skin_tone_even', 0)
+            lip_color = fp.get('lip_color', 0)
+            under_eye = fp.get('under_eye', 0)
+            hair_hue = fp.get('hair_hue', 0)
+            hair_saturation = fp.get('hair_saturation', 0)
+            hair_density = fp.get('hair_density', 0)
+            blush = fp.get('blush', 0)
+            lip_gloss = fp.get('lip_gloss', 0)
+            eye_shadow = fp.get('eye_shadow', 0)
             needs_parsing = (skin_smooth > 0 or teeth_whiten > 0 or eye_sharpen > 0
-                             or skin_tone_even > 0 or lip_color > 0) and self.parser is not None
+                             or skin_tone_even > 0 or lip_color > 0 or under_eye > 0
+                             or hair_hue > 0 or hair_saturation > 0 or hair_density > 0
+                             or blush > 0 or lip_gloss > 0 or eye_shadow > 0) and self.parser is not None
             if needs_parsing:
                 try:
                     # Get or compute face ROI and parsing
@@ -1085,6 +1426,24 @@ class FaceWarpEngine:
                     # Lip color enhancement
                     if lip_color > 0:
                         roi_region = apply_lip_color(roi_region, parsing, lip_color)
+
+                    if under_eye > 0:
+                        under_eye_mask = make_under_eye_mask(lms, roi_bounds, roi_region.shape[:2], parsing)
+                        roi_region = apply_skin_smoothing(roi_region, under_eye_mask, under_eye)
+
+                    if hair_hue > 0 or hair_saturation > 0 or hair_density > 0:
+                        roi_region = apply_hair_controls(roi_region, parsing, hair_hue, hair_saturation, hair_density)
+
+                    if blush > 0:
+                        blush_mask = make_blush_mask(lms, roi_bounds, roi_region.shape[:2])
+                        roi_region = apply_color_overlay(roi_region, blush_mask, (255, 130, 150), blush * 0.28)
+
+                    if lip_gloss > 0:
+                        roi_region = apply_lip_gloss(roi_region, parsing, lip_gloss)
+
+                    if eye_shadow > 0:
+                        eye_shadow_mask = make_eye_shadow_mask(parsing)
+                        roi_region = apply_color_overlay(roi_region, eye_shadow_mask, (112, 92, 160), eye_shadow * 0.22)
 
                     result[ry1:ry2, rx1:rx2] = roi_region
                 except Exception as e:
@@ -1372,8 +1731,7 @@ class VideoThread(QThread):
 
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     faces = eng.detect(rgb)
-                    has_fx = any(abs(self.params.get(k, 0)) > 0
-                                 for k in ['jaw','cheeks','chin','face_width','forehead','nose','eye_enlarge','lip_plump','skin_smooth','teeth_whiten','eye_sharpen','skin_tone_even','lip_color'])
+                    has_fx = any(abs(self.params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
 
                     # Update temporal beta if changed
                     eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
@@ -1412,10 +1770,12 @@ class ExportThread(QThread):
     error = pyqtSignal(str)
     status = pyqtSignal(str)
 
-    def __init__(self, inp, out, params, max_faces=1):
+    def __init__(self, inp, out, params, max_faces=1, watermark=False, compare_mode='none'):
         super().__init__()
         self.inp, self.out, self.params = inp, out, params
         self.max_faces = max_faces
+        self.watermark = watermark
+        self.compare_mode = compare_mode
         self.cancelled = False
 
     def cancel(self):
@@ -1431,10 +1791,10 @@ class ExportThread(QThread):
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 30
             w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            writer = cv2.VideoWriter(self.out, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+            out_w, out_h = video_output_size(w, h, self.compare_mode)
+            writer = cv2.VideoWriter(self.out, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
             self.status.emit(f"Exporting {total} frames...")
-            has_fx = any(abs(self.params.get(k,0)) > 0
-                         for k in ['jaw','cheeks','chin','face_width','forehead','nose','eye_enlarge','lip_plump','skin_smooth','teeth_whiten','eye_sharpen','skin_tone_even','lip_color'])
+            has_fx = any(abs(self.params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
             t_start = time.time()
             for i in range(total):
                 if self.cancelled:
@@ -1444,6 +1804,8 @@ class ExportThread(QThread):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 faces = eng.detect(rgb)
                 proc = eng.warp(rgb, faces, self.params) if (faces and has_fx) else rgb
+                proc = compose_compare_frame(rgb, proc, self.compare_mode)
+                proc = apply_disclosure_watermark(proc, self.watermark)
                 writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
                 if total > 0:
                     self.progress.emit(int((i+1)/total*100))
@@ -1488,12 +1850,17 @@ class BatchThread(QThread):
     finished = pyqtSignal(int, int)       # processed, failed
     error = pyqtSignal(str)
 
-    def __init__(self, files, output_dir, params, max_faces=1):
+    def __init__(self, files, output_dir, params, max_faces=1, watermark=False,
+                 preserve_metadata=True, compare_mode='none', jobs=None):
         super().__init__()
         self.files = files
         self.output_dir = output_dir
         self.params = params
         self.max_faces = max_faces
+        self.watermark = watermark
+        self.preserve_metadata = preserve_metadata
+        self.compare_mode = compare_mode
+        self.jobs = jobs
         self.cancelled = False
 
     def cancel(self):
@@ -1502,19 +1869,23 @@ class BatchThread(QThread):
     def run(self):
         processed = failed = 0
         os.makedirs(self.output_dir, exist_ok=True)
+        jobs = self.jobs or jobs_from_files(self.files, self.output_dir, self.params,
+                                            self.max_faces, self.watermark,
+                                            self.preserve_metadata, self.compare_mode)
 
-        for i, filepath in enumerate(self.files):
+        for i, job in enumerate(jobs):
             if self.cancelled: break
+            filepath = job["input"]
             fname = os.path.basename(filepath)
-            self.progress.emit(i + 1, len(self.files), fname)
+            self.progress.emit(i + 1, len(jobs), fname)
             ext = os.path.splitext(filepath)[1].lower()
 
             try:
                 if ext in IMAGE_EXTS:
-                    self._process_image(filepath)
+                    self._process_image(job)
                     processed += 1
                 elif ext in VIDEO_EXTS:
-                    self._process_video(filepath)
+                    self._process_video(job)
                     processed += 1
                 else:
                     failed += 1
@@ -1524,37 +1895,49 @@ class BatchThread(QThread):
 
         self.finished.emit(processed, failed)
 
-    def _process_image(self, filepath):
-        eng = FaceWarpEngine('image', self.max_faces)
+    def _process_image(self, job):
+        filepath = job["input"]
+        params = job.get("params", self.params)
+        eng = FaceWarpEngine('image', job.get("max_faces", self.max_faces))
         img = cv2.imread(filepath)
         if img is None: raise ValueError(f"Cannot read {filepath}")
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        result, _ = eng.warp_single_image(rgb, self.params)
-        out_path = os.path.join(self.output_dir,
+        result, _ = eng.warp_single_image(rgb, params)
+        result = apply_disclosure_watermark(result, job.get("watermark", self.watermark))
+        out_path = job.get("output") or os.path.join(job.get("output_dir", self.output_dir),
             os.path.splitext(os.path.basename(filepath))[0] + '_slimmed.png')
-        cv2.imwrite(out_path, cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        save_rgb_image(out_path, result, filepath, job.get("preserve_metadata", self.preserve_metadata))
         eng.close()
 
-    def _process_video(self, filepath):
-        eng = FaceWarpEngine('video', self.max_faces)
+    def _process_video(self, job):
+        filepath = job["input"]
+        params = job.get("params", self.params)
+        max_faces = job.get("max_faces", self.max_faces)
+        watermark = job.get("watermark", self.watermark)
+        compare_mode = job.get("compare_mode", self.compare_mode)
+        eng = FaceWarpEngine('video', max_faces)
         eng.grid_scale = 6
         cap = cv2.VideoCapture(filepath)
         if not cap.isOpened(): raise ValueError(f"Cannot open {filepath}")
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        out_path = os.path.join(self.output_dir,
+        out_path = job.get("output") or os.path.join(job.get("output_dir", self.output_dir),
             os.path.splitext(os.path.basename(filepath))[0] + '_slimmed.mp4')
-        writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-        has_fx = any(abs(self.params.get(k,0)) > 0
-                     for k in ['jaw','cheeks','chin','face_width','forehead','nose','eye_enlarge','lip_plump','skin_smooth','teeth_whiten','eye_sharpen','skin_tone_even','lip_color'])
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        out_w, out_h = video_output_size(w, h, compare_mode)
+        writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
+        has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
         for _ in range(total):
             if self.cancelled: break
             ret, frame = cap.read()
             if not ret: break
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             faces = eng.detect(rgb)
-            proc = eng.warp(rgb, faces, self.params) if (faces and has_fx) else rgb
+            proc = eng.warp(rgb, faces, params) if (faces and has_fx) else rgb
+            proc = compose_compare_frame(rgb, proc, compare_mode)
+            proc = apply_disclosure_watermark(proc, watermark)
             writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
         cap.release(); writer.release(); eng.close()
 
@@ -1862,6 +2245,13 @@ class FaceSlimApp(QMainWindow):
         self._make_slider(g_bl, 'teeth_whiten', 'Teeth Whitening', default=0, tip='HSV brightness boost in mouth region')
         self._make_slider(g_bl, 'eye_sharpen', 'Eye Sharpen', default=0, tip='Unsharp mask on eyes and brows for crisp detail')
         self._make_slider(g_bl, 'lip_color', 'Lip Color', default=0, tip='Boosts lip saturation and warmth')
+        self._make_slider(g_bl, 'under_eye', 'Under-Eye Smooth', default=0, tip='Dedicated smoothing below the eyes')
+        self._make_slider(g_bl, 'hair_hue', 'Hair Hue Shift', default=0, tip='Subtle hue shift on parsed hair region')
+        self._make_slider(g_bl, 'hair_saturation', 'Hair Saturation', default=0, tip='Boosts parsed hair color intensity')
+        self._make_slider(g_bl, 'hair_density', 'Hair Density Hint', default=0, tip='Darkens parsed hair region for a denser look')
+        self._make_slider(g_bl, 'blush', 'Blush Overlay', default=0, tip='Procedural cheek blush opacity')
+        self._make_slider(g_bl, 'lip_gloss', 'Lip Gloss', default=0, tip='Adds soft lip highlight and warmth')
+        self._make_slider(g_bl, 'eye_shadow', 'Eye Shadow', default=0, tip='Procedural eye shadow opacity')
         # Face parsing status indicator
         parsing_lbl = QLabel("  Face Parsing: " + ("BiSeNet ONNX" if HAS_BISENET else "Landmark Fallback"))
         parsing_lbl.setStyleSheet(f"color: {'#a6e3a1' if HAS_BISENET else '#f9e2af'}; font-size: 10px;")
@@ -1951,6 +2341,14 @@ class FaceSlimApp(QMainWindow):
         self.btn_exp_gif = QPushButton("Export Before/After GIF")
         self.btn_exp_gif.clicked.connect(self.export_gif); self.btn_exp_gif.setEnabled(False)
         g5l.addWidget(self.btn_exp_gif)
+        exp_opts = QHBoxLayout(); exp_opts.setSpacing(6)
+        self.chk_watermark = QCheckBox("Disclosure watermark")
+        exp_opts.addWidget(self.chk_watermark)
+        exp_opts.addWidget(QLabel("Video:"))
+        self.combo_video_compare = QComboBox()
+        self.combo_video_compare.addItems(["Normal", "Split", "Side-by-side"])
+        exp_opts.addWidget(self.combo_video_compare)
+        g5l.addLayout(exp_opts)
         self.exp_prog = QProgressBar(); self.exp_prog.setVisible(False); g5l.addWidget(self.exp_prog)
         self.exp_stat = QLabel(""); self.exp_stat.setStyleSheet("color:#6c7086; font-size:11px;")
         g5l.addWidget(self.exp_stat)
@@ -1962,6 +2360,9 @@ class FaceSlimApp(QMainWindow):
         self.btn_batch_folder = QPushButton("Process Entire Folder")
         self.btn_batch_folder.setProperty("secondary", True)
         self.btn_batch_folder.clicked.connect(self.start_batch_folder); g6l.addWidget(self.btn_batch_folder)
+        self.btn_batch_manifest = QPushButton("Run Manifest")
+        self.btn_batch_manifest.setProperty("secondary", True)
+        self.btn_batch_manifest.clicked.connect(self.start_batch_manifest); g6l.addWidget(self.btn_batch_manifest)
         self.btn_batch_cancel = QPushButton("Cancel Batch"); self.btn_batch_cancel.setProperty("danger", True)
         self.btn_batch_cancel.clicked.connect(self._cancel_batch); self.btn_batch_cancel.setEnabled(False)
         g6l.addWidget(self.btn_batch_cancel)
@@ -2056,6 +2457,9 @@ class FaceSlimApp(QMainWindow):
         scales = [1.0, 0.75, 0.5]
         if self.video_thread:
             self.video_thread.preview_scale = scales[idx]
+
+    def _video_compare_mode(self):
+        return ['none', 'split', 'side_by_side'][self.combo_video_compare.currentIndex()]
 
     # ── Preset Management ───────────────────────────────────────
     def _refresh_presets(self):
@@ -2239,7 +2643,8 @@ class FaceSlimApp(QMainWindow):
         if not out: return
         self.exp_prog.setVisible(True); self.exp_prog.setValue(0)
         self.btn_exp_video.setEnabled(False); self.btn_exp_cancel.setEnabled(True)
-        self._et = ExportThread(self.source_path, out, self._p(), self.spin_faces.value())
+        self._et = ExportThread(self.source_path, out, self._p(), self.spin_faces.value(),
+                                self.chk_watermark.isChecked(), self._video_compare_mode())
         self._et.progress.connect(self.exp_prog.setValue)
         self._et.finished.connect(lambda p: (self.exp_prog.setValue(100),
             self.btn_exp_video.setEnabled(True), self.btn_exp_cancel.setEnabled(False),
@@ -2266,8 +2671,8 @@ class FaceSlimApp(QMainWindow):
             default = os.path.splitext(os.path.basename(self.source_path))[0] + "_slimmed.png"
         out, _ = QFileDialog.getSaveFileName(self, "Save Screenshot", default, "PNG (*.png);;JPEG (*.jpg)")
         if out:
-            bgr = cv2.cvtColor(self.current_processed, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(out, bgr)
+            result = apply_disclosure_watermark(self.current_processed, self.chk_watermark.isChecked())
+            save_rgb_image(out, result, self.source_path, True)
             self.toast.show_message(f"Screenshot saved")
 
     # ── Export: GIF ─────────────────────────────────────────────
@@ -2302,23 +2707,42 @@ class FaceSlimApp(QMainWindow):
         else:
             self.toast.show_message("No media files found in folder")
 
-    def _run_batch(self, files):
-        output_dir = QFileDialog.getExistingDirectory(self, "Select Output Folder")
+    def start_batch_manifest(self):
+        manifest, _ = QFileDialog.getOpenFileName(self, "Open Batch Manifest", "", "JSON (*.json)")
+        if not manifest:
+            return
+        try:
+            jobs = load_batch_manifest(manifest)
+        except Exception as e:
+            self.toast.show_message(f"Manifest error: {e}", 5000)
+            return
+        if not jobs:
+            self.toast.show_message("Manifest has no jobs")
+            return
+        output_dir = jobs[0].get("output_dir") or os.path.join(os.path.dirname(manifest), "faceslim_output")
+        self._run_batch([job["input"] for job in jobs], output_dir=output_dir, jobs=jobs)
+
+    def _run_batch(self, files, output_dir=None, jobs=None):
+        output_dir = output_dir or QFileDialog.getExistingDirectory(self, "Select Output Folder")
         if not output_dir: return
         self.batch_prog.setVisible(True); self.batch_prog.setValue(0)
-        self.btn_batch.setEnabled(False); self.btn_batch_folder.setEnabled(False)
+        self.btn_batch.setEnabled(False); self.btn_batch_folder.setEnabled(False); self.btn_batch_manifest.setEnabled(False)
         self.btn_batch_cancel.setEnabled(True)
-        self._batch_thread = BatchThread(files, output_dir, self._p(), self.spin_faces.value())
+        self._batch_thread = BatchThread(files, output_dir, self._p(), self.spin_faces.value(),
+                                         self.chk_watermark.isChecked(), True,
+                                         self._video_compare_mode(), jobs)
         self._batch_thread.progress.connect(lambda c, t, f: (
             self.batch_prog.setValue(int(c / t * 100)),
             self.batch_stat.setText(f"Processing {c}/{t}: {f}")))
         self._batch_thread.finished.connect(lambda p, f: (
             self.btn_batch.setEnabled(True), self.btn_batch_folder.setEnabled(True),
+            self.btn_batch_manifest.setEnabled(True),
             self.btn_batch_cancel.setEnabled(False),
             self.batch_stat.setText(f"Done: {p} processed, {f} failed"),
             self.toast.show_message(f"Batch complete: {p} files")))
         self._batch_thread.error.connect(lambda m: (
             self.btn_batch.setEnabled(True), self.btn_batch_folder.setEnabled(True),
+            self.btn_batch_manifest.setEnabled(True),
             self.batch_stat.setText(f"Error: {m}")))
         self._batch_thread.start()
 
@@ -2341,11 +2765,15 @@ class FaceSlimApp(QMainWindow):
         for k, (s, _) in self.sliders.items():
             s.setValue(self.settings.value(f"s/{k}", s.value(), type=int))
         self.spin_faces.setValue(self.settings.value("max_faces", 1, type=int))
+        self.chk_watermark.setChecked(self.settings.value("watermark", False, type=bool))
+        self.combo_video_compare.setCurrentIndex(self.settings.value("video_compare", 0, type=int))
 
     def _save_settings(self):
         for k, (s, _) in self.sliders.items():
             self.settings.setValue(f"s/{k}", s.value())
         self.settings.setValue("max_faces", self.spin_faces.value())
+        self.settings.setValue("watermark", self.chk_watermark.isChecked())
+        self.settings.setValue("video_compare", self.combo_video_compare.currentIndex())
 
     def closeEvent(self, e):
         self._save_settings(); self.stop_video()
@@ -2362,54 +2790,34 @@ def cli_process(args):
         print(f"ERROR: Model not available. Download from:\n  {MODEL_URL}")
         sys.exit(1)
     ensure_parsing_model()  # Non-fatal - falls back to landmark mask
-    params = DEFAULT_PARAMS.copy()
-    if args.preset:
-        key = args.preset
-        if key in BUILT_IN_PRESETS:
-            params.update(BUILT_IN_PRESETS[key])
-        else:
-            custom = PresetManager.list_custom()
-            if key in custom:
-                params.update(custom[key])
-            else:
-                print(f"Unknown preset: {key}")
-                print(f"Available: {', '.join(list(BUILT_IN_PRESETS.keys()) + list(custom.keys()))}")
-                sys.exit(1)
-
-    if args.jaw is not None: params['jaw'] = args.jaw
-    if args.cheeks is not None: params['cheeks'] = args.cheeks
-    if args.chin is not None: params['chin'] = args.chin
-    if args.face_width is not None: params['face_width'] = args.face_width
-    if args.forehead is not None: params['forehead'] = args.forehead
-    if args.nose is not None: params['nose'] = args.nose
-    if args.eye_enlarge is not None: params['eye_enlarge'] = args.eye_enlarge
-    if args.lip_plump is not None: params['lip_plump'] = args.lip_plump
-    if args.skin_smooth is not None: params['skin_smooth'] = args.skin_smooth
-    if args.teeth_whiten is not None: params['teeth_whiten'] = args.teeth_whiten
-    if args.eye_sharpen is not None: params['eye_sharpen'] = args.eye_sharpen
-    if args.skin_tone_even is not None: params['skin_tone_even'] = args.skin_tone_even
-    if args.lip_color is not None: params['lip_color'] = args.lip_color
-    if args.smoothing is not None: params['smoothing'] = args.smoothing
+    overrides = {k: getattr(args, k) for k in CLI_PARAM_KEYS
+                 if hasattr(args, k) and getattr(args, k) is not None}
+    try:
+        params = params_from_preset_and_overrides(args.preset, overrides)
+        face_overrides = parse_face_overrides(args.face_preset, args.face_param)
+    except Exception as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+    if face_overrides:
+        params["face_params"] = face_overrides
 
     max_faces = args.faces or 1
 
-    # Collect input files
-    inputs = []
-    for inp in args.input:
-        if os.path.isdir(inp):
-            for f in os.listdir(inp):
-                if os.path.splitext(f)[1].lower() in IMAGE_EXTS | VIDEO_EXTS:
-                    inputs.append(os.path.join(inp, f))
-        elif os.path.isfile(inp):
-            inputs.append(inp)
-        else:
-            print(f"Warning: {inp} not found, skipping")
+    if args.manifest:
+        jobs = load_batch_manifest(args.manifest, args.output)
+        inputs = [job["input"] for job in jobs]
+    else:
+        inputs = media_files_from_paths(args.input)
+        jobs = None
 
     if not inputs:
         print("No input files found"); sys.exit(1)
 
     output_dir = args.output or os.path.join(os.path.dirname(inputs[0]), 'faceslim_output')
     os.makedirs(output_dir, exist_ok=True)
+    if jobs is None:
+        jobs = jobs_from_files(inputs, output_dir, params, max_faces, args.watermark,
+                               not args.strip_metadata, args.video_compare)
 
     print(f"\nFaceSlim v{VERSION} - CLI Mode")
     print(f"  GPU: {'ON (' + GPU_NAME + ')' if USE_GPU else 'OFF'}")
@@ -2418,10 +2826,16 @@ def cli_process(args):
     print(f"  Output: {output_dir}\n")
 
     processed = failed = 0
-    for i, filepath in enumerate(sorted(inputs)):
+    for i, job in enumerate(jobs):
+        filepath = job["input"]
+        params = job.get("params", params)
+        max_faces = job.get("max_faces", max_faces)
+        watermark = job.get("watermark", args.watermark)
+        preserve_metadata = job.get("preserve_metadata", not args.strip_metadata)
+        compare_mode = job.get("compare_mode", args.video_compare)
         fname = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
-        print(f"  [{i+1}/{len(inputs)}] {fname}...", end=' ', flush=True)
+        print(f"  [{i+1}/{len(jobs)}] {fname}...", end=' ', flush=True)
 
         try:
             if ext in IMAGE_EXTS:
@@ -2430,8 +2844,11 @@ def cli_process(args):
                 if img is None: raise ValueError("Cannot read image")
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 result, faces = eng.warp_single_image(rgb, params)
-                out_path = os.path.join(output_dir, os.path.splitext(fname)[0] + '_slimmed.png')
-                cv2.imwrite(out_path, cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
+                result = apply_disclosure_watermark(result, watermark)
+                out_path = job.get("output") or os.path.join(job.get("output_dir", output_dir),
+                    os.path.splitext(fname)[0] + '_slimmed.png')
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                save_rgb_image(out_path, result, filepath, preserve_metadata)
                 eng.close()
                 print(f"OK ({len(faces)} face{'s' if len(faces) != 1 else ''})")
                 processed += 1
@@ -2444,10 +2861,12 @@ def cli_process(args):
                 total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 fps = cap.get(cv2.CAP_PROP_FPS) or 30
                 w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                out_path = os.path.join(output_dir, os.path.splitext(fname)[0] + '_slimmed.mp4')
-                writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                has_fx = any(abs(params.get(k,0)) > 0
-                             for k in ['jaw','cheeks','chin','face_width','forehead','nose','eye_enlarge','lip_plump','skin_smooth','teeth_whiten','eye_sharpen','skin_tone_even','lip_color'])
+                out_path = job.get("output") or os.path.join(job.get("output_dir", output_dir),
+                    os.path.splitext(fname)[0] + '_slimmed.mp4')
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                out_w, out_h = video_output_size(w, h, compare_mode)
+                writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
+                has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
                 t0 = time.time()
                 for fi in range(total):
                     ret, frame = cap.read()
@@ -2455,13 +2874,15 @@ def cli_process(args):
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     faces = eng.detect(rgb)
                     proc = eng.warp(rgb, faces, params) if (faces and has_fx) else rgb
+                    proc = compose_compare_frame(rgb, proc, compare_mode)
+                    proc = apply_disclosure_watermark(proc, watermark)
                     writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
                     if fi % 30 == 0 and fi > 0:
                         eta = ((time.time() - t0) / fi) * (total - fi)
-                        print(f"\r  [{i+1}/{len(inputs)}] {fname}... {fi}/{total} frames (ETA: {int(eta)}s)", end='', flush=True)
+                        print(f"\r  [{i+1}/{len(jobs)}] {fname}... {fi}/{total} frames (ETA: {int(eta)}s)", end='', flush=True)
                 cap.release(); writer.release(); eng.close()
                 elapsed = time.time() - t0
-                print(f"\r  [{i+1}/{len(inputs)}] {fname}... OK ({total} frames, {elapsed:.1f}s)")
+                print(f"\r  [{i+1}/{len(jobs)}] {fname}... OK ({total} frames, {elapsed:.1f}s)")
                 processed += 1
             else:
                 print(f"SKIP (unsupported)")
@@ -2478,11 +2899,6 @@ def cli_process(args):
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════
 def main():
-    if not ensure_model():
-        print(f"ERROR: Could not obtain model.\nDownload from:\n  {MODEL_URL}\nPlace at:\n  {MODEL_PATH}")
-        sys.exit(1)
-    ensure_parsing_model()  # Non-fatal - falls back to landmark mask
-
     parser = argparse.ArgumentParser(
         prog='FaceSlim',
         description=f'FaceSlim v{VERSION} - AI Face Slimming & Reshaping Suite',
@@ -2511,8 +2927,26 @@ Examples:
     parser.add_argument('--eye-sharpen', type=int, dest='eye_sharpen', help='AI eye sharpening (0-100)')
     parser.add_argument('--skin-tone-even', type=int, dest='skin_tone_even', help='AI skin tone evening (0-100)')
     parser.add_argument('--lip-color', type=int, dest='lip_color', help='AI lip color enhancement (0-100)')
+    parser.add_argument('--under-eye', type=int, dest='under_eye', help='Under-eye smoothing (0-100)')
+    parser.add_argument('--hair-hue', type=int, dest='hair_hue', help='Hair hue shift (0-100)')
+    parser.add_argument('--hair-saturation', type=int, dest='hair_saturation', help='Hair saturation boost (0-100)')
+    parser.add_argument('--hair-density', type=int, dest='hair_density', help='Hair density hint (0-100)')
+    parser.add_argument('--blush', type=int, help='Procedural blush overlay (0-100)')
+    parser.add_argument('--lip-gloss', type=int, dest='lip_gloss', help='Lip gloss overlay (0-100)')
+    parser.add_argument('--eye-shadow', type=int, dest='eye_shadow', help='Eye shadow overlay (0-100)')
     parser.add_argument('--smoothing', type=int, help='Warp smoothing (10-100)')
+    parser.add_argument('--temporal', type=int, help='Temporal landmark smoothing (0-100)')
+    parser.add_argument('--bg-protect', type=int, dest='bg_protect', help='Background protection (0-100)')
     parser.add_argument('--faces', type=int, help='Max faces to process (1-5)')
+    parser.add_argument('--face-preset', action='append', default=[], metavar='FACE=PRESET',
+                        help='Apply a preset to one face index, e.g. 2=Beauty')
+    parser.add_argument('--face-param', action='append', default=[], metavar='FACE:key=value',
+                        help='Override one parameter for a face, e.g. 1:jaw=35')
+    parser.add_argument('--manifest', help='JSON batch manifest with per-file/per-face settings')
+    parser.add_argument('--watermark', action='store_true', help='Add AI modification disclosure watermark')
+    parser.add_argument('--strip-metadata', action='store_true', help='Do not preserve image EXIF/XMP/ICC metadata')
+    parser.add_argument('--video-compare', choices=['none', 'split', 'side_by_side'], default='none',
+                        help='Export processed video normally, split-screen, or side-by-side')
     parser.add_argument('--list-presets', action='store_true', help='List available presets')
 
     args = parser.parse_args()
@@ -2531,7 +2965,12 @@ Examples:
                 print(f"  {name:15s} {desc}")
         sys.exit(0)
 
-    if args.input:
+    if not ensure_model():
+        print(f"ERROR: Could not obtain model.\nDownload from:\n  {MODEL_URL}\nPlace at:\n  {MODEL_PATH}")
+        sys.exit(1)
+    ensure_parsing_model()  # Non-fatal - falls back to landmark mask
+
+    if args.input or args.manifest:
         cli_process(args)
     else:
         # GUI mode
