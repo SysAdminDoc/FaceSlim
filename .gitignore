@@ -18,6 +18,7 @@ dist/
 
 # Downloaded models and logs
 face_landmarker.task
+bisenet_*.onnx
 bisenet_face_parsing.onnx
 *.tmp
 crash.log

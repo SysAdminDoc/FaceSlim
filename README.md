@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.5.0-blue)
+![Version](https://img.shields.io/badge/version-1.6.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -18,7 +18,7 @@ python -m venv .venv
 python FaceSlim_v1.py
 ```
 
-On first launch, FaceSlim downloads the face landmarker (~3.7 MB) and BiSeNet parsing model (~50 MB). Python dependencies are installed through `requirements.txt`.
+On first launch, FaceSlim downloads the face landmarker (~3.7 MB) and the selected BiSeNet parsing model (~50-94 MB). Python dependencies are installed through `requirements.txt`.
 
 ## Features
 
@@ -53,6 +53,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB) and BiSeNet pa
 | Feature | Description |
 |---------|-------------|
 | BiSeNet Face Parsing | 19-class pixel-level segmentation via ONNX Runtime |
+| Parser Model Selector | Toggle BiSeNet ResNet18 or ResNet34 ONNX masks in Settings/CLI |
 | Background Protection | ROI-isolated warp + seamless clone composite |
 | Temporal Mask Smoothing | EMA filter prevents parsing mask flicker on video |
 | Optical Flow Propagation | Warp displacement propagation between TPS keyframes |
@@ -140,6 +141,9 @@ python FaceSlim_v1.py --manifest batch.json --output ./results/
 # Split-screen video export with disclosure watermark
 python FaceSlim_v1.py --input video.mp4 --preset Glamour --video-compare split --watermark
 
+# Higher-quality parser model
+python FaceSlim_v1.py --input photo.jpg --parser-model bisenet_resnet34 --skin-smooth 35
+
 # List available presets
 python FaceSlim_v1.py --list-presets
 ```
@@ -181,6 +185,7 @@ python FaceSlim_v1.py --list-presets
 | `--watermark` | flag | Add AI modification disclosure watermark |
 | `--strip-metadata` | flag | Do not preserve image EXIF/ICC metadata |
 | `--video-compare` | `none`, `split`, `side_by_side` | Export processed, split-screen, or side-by-side video |
+| `--parser-model` | `bisenet_resnet18`, `bisenet_resnet34` | Face parsing model for beauty masks |
 | `--list-presets` | flag | List all available presets |
 
 ### Batch Manifest
@@ -188,6 +193,7 @@ python FaceSlim_v1.py --list-presets
 ```json
 {
   "preset": "Moderate",
+  "parser_model": "bisenet_resnet34",
   "faces": 3,
   "watermark": true,
   "video_compare": "split",
@@ -236,9 +242,10 @@ Slider values persist between sessions via Qt settings. Crash logs are written t
 | Model | Size | Source | Purpose |
 |-------|------|--------|---------|
 | `face_landmarker.task` | ~3.7 MB | Google MediaPipe | 478-point face landmarks |
-| `bisenet_face_parsing.onnx` | ~50 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | 19-class face segmentation (CelebAMask-HQ) |
+| `bisenet_face_parsing.onnx` | ~50 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Fast 19-class face segmentation (CelebAMask-HQ) |
+| `bisenet_resnet34.onnx` | ~94 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Higher-quality 19-class face segmentation (CelebAMask-HQ) |
 
-Both models are downloaded automatically on first run. If the BiSeNet model fails to download, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
+The face landmarker and selected parser model are downloaded automatically on first use. If the selected BiSeNet model fails to download, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
 
 ## Requirements
 
@@ -266,7 +273,7 @@ The Windows executable is emitted at `dist/FaceSlim.exe`. The spec includes a mu
 ## FAQ / Troubleshooting
 
 **BiSeNet model fails to download**
-The app falls back to landmark-based masking automatically. AI beauty effects (skin smooth, teeth whiten, etc.) require the BiSeNet model. You can manually download `resnet18.onnx` from the [face-parsing releases](https://github.com/yakhyo/face-parsing/releases) and rename it to `bisenet_face_parsing.onnx` in the app directory.
+The app falls back to landmark-based masking automatically. AI beauty effects (skin smooth, teeth whiten, etc.) require a BiSeNet model. You can manually download `resnet18.onnx` or `resnet34.onnx` from the [face-parsing releases](https://github.com/yakhyo/face-parsing/releases) and place it in the app directory as `bisenet_face_parsing.onnx` or `bisenet_resnet34.onnx`.
 
 **Low FPS in real-time preview**
 Use the Preview Scale dropdown (75% or 50%) in the Quality group. Install PyTorch with CUDA for GPU acceleration. Optical flow propagation kicks in automatically for video, computing full TPS only every 4th frame.

@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.6.0 - 2026-06-27
+
+- Added selectable BiSeNet ResNet18/ResNet34 ONNX parser models for GUI, CLI, exports, and batch manifests.
+- Persisted the parser-model setting and documented the new `--parser-model` option.
+
 ## FaceSlim v1.5.0 - 2026-06-27
 
 - Added DirectML-backed ONNX Runtime provider selection on Windows.

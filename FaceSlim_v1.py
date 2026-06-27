@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.5.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.6.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -10,7 +10,7 @@ Phase 2: Temporal mask smoothing, optical flow propagation,
          eye enlargement, teeth whitening
 Phase 3: Lip plumping, eye sharpening, skin tone evening, lip color
 
-Turnkey: auto-installs all dependencies and downloads models on first run.
+Dependencies install from requirements.txt; models download on first use.
 """
 
 import multiprocessing
@@ -87,7 +87,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -132,9 +132,24 @@ def ensure_model():
         print(f"Failed to download model: {e}")
         return False
 
-# ── BiSeNet Face Parsing Model ─────────────────────────────────────────
-BISENET_PATH = os.path.join(APP_DIR, "bisenet_face_parsing.onnx")
-BISENET_URL = "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx"
+# ── Face Parsing Models ────────────────────────────────────────────────
+PARSER_MODELS = {
+    "bisenet_resnet18": {
+        "label": "BiSeNet ResNet18 (fast)",
+        "filename": "bisenet_face_parsing.onnx",
+        "url": "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx",
+        "min_bytes": 40_000_000,
+    },
+    "bisenet_resnet34": {
+        "label": "BiSeNet ResNet34 (quality)",
+        "filename": "bisenet_resnet34.onnx",
+        "url": "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet34.onnx",
+        "min_bytes": 80_000_000,
+    },
+}
+DEFAULT_PARSER_MODEL = "bisenet_resnet18"
+BISENET_PATH = os.path.join(APP_DIR, PARSER_MODELS[DEFAULT_PARSER_MODEL]["filename"])
+BISENET_URL = PARSER_MODELS[DEFAULT_PARSER_MODEL]["url"]
 # CelebAMask-HQ label indices
 PARSE_BACKGROUND = 0
 PARSE_SKIN = 1
@@ -163,20 +178,43 @@ FACE_MASK_LABELS = {PARSE_SKIN, PARSE_L_BROW, PARSE_R_BROW, PARSE_L_EYE, PARSE_R
 SKIN_SMOOTH_LABELS = {PARSE_SKIN}
 
 HAS_BISENET = False
+ACTIVE_PARSER_MODEL = DEFAULT_PARSER_MODEL
+ACTIVE_PARSER_PATH = BISENET_PATH
 
-def ensure_parsing_model():
-    global HAS_BISENET
-    if os.path.exists(BISENET_PATH) and os.path.getsize(BISENET_PATH) > 1_000_000:
+def parser_model_key(model_key=None):
+    return model_key if model_key in PARSER_MODELS else DEFAULT_PARSER_MODEL
+
+def parser_model_label(model_key=None):
+    return PARSER_MODELS[parser_model_key(model_key)]["label"]
+
+def parser_model_path(model_key=None):
+    return os.path.join(APP_DIR, PARSER_MODELS[parser_model_key(model_key)]["filename"])
+
+def parser_model_ready(model_key=None):
+    cfg = PARSER_MODELS[parser_model_key(model_key)]
+    path = parser_model_path(model_key)
+    return os.path.exists(path) and os.path.getsize(path) > cfg["min_bytes"]
+
+def ensure_parsing_model(model_key=None):
+    global HAS_BISENET, ACTIVE_PARSER_MODEL, ACTIVE_PARSER_PATH
+    key = parser_model_key(model_key)
+    cfg = PARSER_MODELS[key]
+    path = parser_model_path(key)
+    if parser_model_ready(key):
         HAS_BISENET = True
+        ACTIVE_PARSER_MODEL = key
+        ACTIVE_PARSER_PATH = path
         return True
-    print("Downloading BiSeNet face parsing model (~50 MB)...")
-    tmp = BISENET_PATH + '.tmp'
+    print(f"Downloading {cfg['label']} face parsing model...")
+    tmp = path + '.tmp'
     try:
-        urllib.request.urlretrieve(BISENET_URL, tmp)
-        if os.path.getsize(tmp) > 1_000_000:
-            os.replace(tmp, BISENET_PATH)
+        urllib.request.urlretrieve(cfg["url"], tmp)
+        if os.path.getsize(tmp) > cfg["min_bytes"]:
+            os.replace(tmp, path)
             HAS_BISENET = True
-            print("  Face parsing model ready")
+            ACTIVE_PARSER_MODEL = key
+            ACTIVE_PARSER_PATH = path
+            print(f"  Face parsing model ready: {cfg['label']}")
             return True
         else:
             os.remove(tmp)
@@ -187,6 +225,7 @@ def ensure_parsing_model():
             try: os.remove(tmp)
             except OSError: pass
         print(f"  Face parsing download failed: {e} (will use landmark fallback)")
+        HAS_BISENET = False
         return False
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -313,7 +352,10 @@ class FaceParsingEngine:
     _STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     _INPUT_SIZE = 512
 
-    def __init__(self):
+    def __init__(self, model_key=None):
+        self.model_key = parser_model_key(model_key)
+        if not ensure_parsing_model(self.model_key):
+            raise RuntimeError(f"{parser_model_label(self.model_key)} unavailable")
         available = ort.get_available_providers()
         providers = []
         if USE_GPU and 'CUDAExecutionProvider' in available:
@@ -322,10 +364,10 @@ class FaceParsingEngine:
             providers.append('DmlExecutionProvider')
         providers.append('CPUExecutionProvider')
         providers = [p for p in providers if p in available]
-        self.session = ort.InferenceSession(BISENET_PATH, providers=providers)
+        self.session = ort.InferenceSession(parser_model_path(self.model_key), providers=providers)
         self.input_name = self.session.get_inputs()[0].name
         self._cache = {}  # {(h, w, key): parsing_map}
-        print(f"  Face parsing: BiSeNet loaded ({providers[0]})")
+        print(f"  Face parsing: {parser_model_label(self.model_key)} loaded ({providers[0]})")
 
     def parse(self, face_rgb, cache_key=None):
         """Run face parsing on RGB image. Returns (h, w) int array of class labels 0-18."""
@@ -772,11 +814,12 @@ def _manifest_path(base_dir, path_value):
     return path_value if os.path.isabs(path_value) else os.path.abspath(os.path.join(base_dir, path_value))
 
 
-def load_batch_manifest(manifest_path, fallback_output=None):
+def load_batch_manifest(manifest_path, fallback_output=None, fallback_parser_model=None):
     with open(manifest_path, encoding="utf-8-sig") as f:
         data = json.load(f)
     base_dir = os.path.dirname(os.path.abspath(manifest_path))
     default_params = params_from_preset_and_overrides(data.get("preset"), data.get("params"))
+    default_parser_model = parser_model_key(data.get("parser_model") or fallback_parser_model)
     default_face_params = data.get("face_params") or {}
     if default_face_params:
         default_params["face_params"] = {int(k) - 1 if str(k).isdigit() else k: v
@@ -806,12 +849,13 @@ def load_batch_manifest(manifest_path, fallback_output=None):
             "watermark": bool(entry.get("watermark", data.get("watermark", False))),
             "preserve_metadata": bool(entry.get("preserve_metadata", data.get("preserve_metadata", True))),
             "compare_mode": entry.get("video_compare", data.get("video_compare", "none")),
+            "parser_model": parser_model_key(entry.get("parser_model") or default_parser_model),
         })
     return jobs
 
 
 def jobs_from_files(files, output_dir, params, max_faces=1, watermark=False,
-                    preserve_metadata=True, compare_mode='none'):
+                    preserve_metadata=True, compare_mode='none', parser_model=None):
     return [{
         "input": f,
         "output_dir": output_dir,
@@ -821,6 +865,7 @@ def jobs_from_files(files, output_dir, params, max_faces=1, watermark=False,
         "watermark": watermark,
         "preserve_metadata": preserve_metadata,
         "compare_mode": compare_mode,
+        "parser_model": parser_model_key(parser_model),
     } for f in files]
 
 
@@ -920,7 +965,8 @@ class OpticalFlowPropagator:
 # FACE WARP ENGINE (GPU + CPU dual path, multi-face)
 # ═══════════════════════════════════════════════════════════════════════════
 class FaceWarpEngine:
-    def __init__(self, mode='video', max_faces=1):
+    def __init__(self, mode='video', max_faces=1, parser_model=None):
+        self.parser_model = parser_model_key(parser_model)
         rm = vision.RunningMode.VIDEO if mode == 'video' else vision.RunningMode.IMAGE
         opts = vision.FaceLandmarkerOptions(
             base_options=mp_tasks.BaseOptions(model_asset_path=MODEL_PATH),
@@ -942,9 +988,9 @@ class FaceWarpEngine:
         self._caches = [{} for _ in range(max_faces)]
         # Face parsing engine (optional, for better masks + skin smooth)
         self.parser = None
-        if HAS_BISENET:
+        if ensure_parsing_model(self.parser_model):
             try:
-                self.parser = FaceParsingEngine()
+                self.parser = FaceParsingEngine(self.parser_model)
             except Exception as e:
                 print(f"  Face parsing init failed: {e} (using landmark fallback)")
                 self.parser = None
@@ -1689,6 +1735,7 @@ class VideoThread(QThread):
         self.source = None
         self.params = DEFAULT_PARAMS.copy()
         self.max_faces = 1
+        self.parser_model = DEFAULT_PARSER_MODEL
         self.preview_scale = 1.0  # 1.0 = full res, 0.5 = half
 
     def set_source(self, s): self.source = s
@@ -1699,7 +1746,7 @@ class VideoThread(QThread):
         cap = None
         try:
             self.running = True
-            eng = FaceWarpEngine('video', self.max_faces)
+            eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
             # Apply temporal beta
             beta = self.params.get('temporal', 50) / 5000.0
             eng.set_temporal_beta(beta)
@@ -1717,7 +1764,7 @@ class VideoThread(QThread):
                 if not ret:
                     if self.source is not None:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        eng.close(); eng = FaceWarpEngine('video', self.max_faces)
+                        eng.close(); eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
                         eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
                         continue
                     break
@@ -1770,12 +1817,14 @@ class ExportThread(QThread):
     error = pyqtSignal(str)
     status = pyqtSignal(str)
 
-    def __init__(self, inp, out, params, max_faces=1, watermark=False, compare_mode='none'):
+    def __init__(self, inp, out, params, max_faces=1, watermark=False,
+                 compare_mode='none', parser_model=None):
         super().__init__()
         self.inp, self.out, self.params = inp, out, params
         self.max_faces = max_faces
         self.watermark = watermark
         self.compare_mode = compare_mode
+        self.parser_model = parser_model_key(parser_model)
         self.cancelled = False
 
     def cancel(self):
@@ -1783,7 +1832,7 @@ class ExportThread(QThread):
 
     def run(self):
         try:
-            eng = FaceWarpEngine('video', self.max_faces)
+            eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
             eng.grid_scale = 6
             cap = cv2.VideoCapture(self.inp)
             if not cap.isOpened():
@@ -1851,7 +1900,8 @@ class BatchThread(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, files, output_dir, params, max_faces=1, watermark=False,
-                 preserve_metadata=True, compare_mode='none', jobs=None):
+                 preserve_metadata=True, compare_mode='none', jobs=None,
+                 parser_model=None):
         super().__init__()
         self.files = files
         self.output_dir = output_dir
@@ -1861,6 +1911,7 @@ class BatchThread(QThread):
         self.preserve_metadata = preserve_metadata
         self.compare_mode = compare_mode
         self.jobs = jobs
+        self.parser_model = parser_model_key(parser_model)
         self.cancelled = False
 
     def cancel(self):
@@ -1871,7 +1922,8 @@ class BatchThread(QThread):
         os.makedirs(self.output_dir, exist_ok=True)
         jobs = self.jobs or jobs_from_files(self.files, self.output_dir, self.params,
                                             self.max_faces, self.watermark,
-                                            self.preserve_metadata, self.compare_mode)
+                                            self.preserve_metadata, self.compare_mode,
+                                            self.parser_model)
 
         for i, job in enumerate(jobs):
             if self.cancelled: break
@@ -1898,7 +1950,8 @@ class BatchThread(QThread):
     def _process_image(self, job):
         filepath = job["input"]
         params = job.get("params", self.params)
-        eng = FaceWarpEngine('image', job.get("max_faces", self.max_faces))
+        eng = FaceWarpEngine('image', job.get("max_faces", self.max_faces),
+                             job.get("parser_model", self.parser_model))
         img = cv2.imread(filepath)
         if img is None: raise ValueError(f"Cannot read {filepath}")
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -1916,7 +1969,7 @@ class BatchThread(QThread):
         max_faces = job.get("max_faces", self.max_faces)
         watermark = job.get("watermark", self.watermark)
         compare_mode = job.get("compare_mode", self.compare_mode)
-        eng = FaceWarpEngine('video', max_faces)
+        eng = FaceWarpEngine('video', max_faces, job.get("parser_model", self.parser_model))
         eng.grid_scale = 6
         cap = cv2.VideoCapture(filepath)
         if not cap.isOpened(): raise ValueError(f"Cannot open {filepath}")
@@ -2135,6 +2188,7 @@ class FaceSlimApp(QMainWindow):
         self.image_mode = False  # True when viewing a single image
         self._image_engine = None  # Cached engine for image mode
         self._image_engine_faces = 0
+        self._image_engine_parser = DEFAULT_PARSER_MODEL
         self._build_ui()
         self._load_settings()
         self.history.push(self._p())
@@ -2252,10 +2306,17 @@ class FaceSlimApp(QMainWindow):
         self._make_slider(g_bl, 'blush', 'Blush Overlay', default=0, tip='Procedural cheek blush opacity')
         self._make_slider(g_bl, 'lip_gloss', 'Lip Gloss', default=0, tip='Adds soft lip highlight and warmth')
         self._make_slider(g_bl, 'eye_shadow', 'Eye Shadow', default=0, tip='Procedural eye shadow opacity')
-        # Face parsing status indicator
-        parsing_lbl = QLabel("  Face Parsing: " + ("BiSeNet ONNX" if HAS_BISENET else "Landmark Fallback"))
-        parsing_lbl.setStyleSheet(f"color: {'#a6e3a1' if HAS_BISENET else '#f9e2af'}; font-size: 10px;")
-        g_bl.addWidget(parsing_lbl)
+        parser_row = QHBoxLayout()
+        parser_row.addWidget(QLabel("Parser Model:"))
+        self.combo_parser_model = QComboBox()
+        for key, cfg in PARSER_MODELS.items():
+            self.combo_parser_model.addItem(cfg["label"], key)
+        self.combo_parser_model.currentIndexChanged.connect(self._on_parser_model_changed)
+        parser_row.addWidget(self.combo_parser_model)
+        g_bl.addLayout(parser_row)
+        self.parsing_lbl = QLabel("")
+        self.parsing_lbl.setStyleSheet("color:#a6e3a1; font-size:10px;")
+        g_bl.addWidget(self.parsing_lbl)
         t1.addWidget(g_beauty)
 
         g2 = QGroupBox("Quality"); g2l = QVBoxLayout(g2); g2l.setSpacing(6)
@@ -2461,6 +2522,32 @@ class FaceSlimApp(QMainWindow):
     def _video_compare_mode(self):
         return ['none', 'split', 'side_by_side'][self.combo_video_compare.currentIndex()]
 
+    def _parser_model_key(self):
+        if hasattr(self, "combo_parser_model"):
+            return parser_model_key(self.combo_parser_model.currentData())
+        return DEFAULT_PARSER_MODEL
+
+    def _set_parser_model_status(self):
+        key = self._parser_model_key()
+        ready = parser_model_ready(key)
+        self.parsing_lbl.setText(
+            f"  Face Parsing: {parser_model_label(key)}"
+            + (" ready" if ready else " downloads on first use")
+        )
+        self.parsing_lbl.setStyleSheet(f"color: {'#a6e3a1' if ready else '#f9e2af'}; font-size: 10px;")
+
+    def _on_parser_model_changed(self, _idx):
+        self._set_parser_model_status()
+        if self._image_engine is not None:
+            self._image_engine.close()
+            self._image_engine = None
+        if self.video_thread and self.video_thread.isRunning():
+            self._go(self.video_thread.source)
+        elif self.image_mode:
+            self._process_current_image()
+        if hasattr(self, "toast"):
+            self.toast.show_message(f"Parser: {parser_model_label(self._parser_model_key())}")
+
     # ── Preset Management ───────────────────────────────────────
     def _refresh_presets(self):
         self.preset_combo.clear()
@@ -2546,11 +2633,14 @@ class FaceSlimApp(QMainWindow):
     def _process_current_image(self):
         if self.current_original is None: return
         nf = self.spin_faces.value()
-        if self._image_engine is None or self._image_engine_faces != nf:
+        parser_model = self._parser_model_key()
+        if (self._image_engine is None or self._image_engine_faces != nf
+                or self._image_engine_parser != parser_model):
             if self._image_engine is not None:
                 self._image_engine.close()
-            self._image_engine = FaceWarpEngine('image', nf)
+            self._image_engine = FaceWarpEngine('image', nf, parser_model)
             self._image_engine_faces = nf
+            self._image_engine_parser = parser_model
         result, faces = self._image_engine.warp_single_image(self.current_original, self._p())
         self.current_processed = result
         self.current_faces = faces
@@ -2565,6 +2655,7 @@ class FaceSlimApp(QMainWindow):
         self.video_thread.show_landmarks = self.chk_lm.isChecked()
         self.video_thread.show_confidence = self.chk_conf.isChecked()
         self.video_thread.max_faces = self.spin_faces.value()
+        self.video_thread.parser_model = self._parser_model_key()
         scales = [1.0, 0.75, 0.5]
         self.video_thread.preview_scale = scales[self.combo_scale.currentIndex()]
         self.video_thread.frame_ready.connect(self._on_frame)
@@ -2644,7 +2735,8 @@ class FaceSlimApp(QMainWindow):
         self.exp_prog.setVisible(True); self.exp_prog.setValue(0)
         self.btn_exp_video.setEnabled(False); self.btn_exp_cancel.setEnabled(True)
         self._et = ExportThread(self.source_path, out, self._p(), self.spin_faces.value(),
-                                self.chk_watermark.isChecked(), self._video_compare_mode())
+                                self.chk_watermark.isChecked(), self._video_compare_mode(),
+                                self._parser_model_key())
         self._et.progress.connect(self.exp_prog.setValue)
         self._et.finished.connect(lambda p: (self.exp_prog.setValue(100),
             self.btn_exp_video.setEnabled(True), self.btn_exp_cancel.setEnabled(False),
@@ -2712,7 +2804,7 @@ class FaceSlimApp(QMainWindow):
         if not manifest:
             return
         try:
-            jobs = load_batch_manifest(manifest)
+            jobs = load_batch_manifest(manifest, fallback_parser_model=self._parser_model_key())
         except Exception as e:
             self.toast.show_message(f"Manifest error: {e}", 5000)
             return
@@ -2730,7 +2822,8 @@ class FaceSlimApp(QMainWindow):
         self.btn_batch_cancel.setEnabled(True)
         self._batch_thread = BatchThread(files, output_dir, self._p(), self.spin_faces.value(),
                                          self.chk_watermark.isChecked(), True,
-                                         self._video_compare_mode(), jobs)
+                                         self._video_compare_mode(), jobs,
+                                         self._parser_model_key())
         self._batch_thread.progress.connect(lambda c, t, f: (
             self.batch_prog.setValue(int(c / t * 100)),
             self.batch_stat.setText(f"Processing {c}/{t}: {f}")))
@@ -2767,6 +2860,11 @@ class FaceSlimApp(QMainWindow):
         self.spin_faces.setValue(self.settings.value("max_faces", 1, type=int))
         self.chk_watermark.setChecked(self.settings.value("watermark", False, type=bool))
         self.combo_video_compare.setCurrentIndex(self.settings.value("video_compare", 0, type=int))
+        saved_parser = parser_model_key(self.settings.value("parser_model", DEFAULT_PARSER_MODEL, type=str))
+        parser_idx = self.combo_parser_model.findData(saved_parser)
+        if parser_idx >= 0:
+            self.combo_parser_model.setCurrentIndex(parser_idx)
+        self._set_parser_model_status()
 
     def _save_settings(self):
         for k, (s, _) in self.sliders.items():
@@ -2774,6 +2872,7 @@ class FaceSlimApp(QMainWindow):
         self.settings.setValue("max_faces", self.spin_faces.value())
         self.settings.setValue("watermark", self.chk_watermark.isChecked())
         self.settings.setValue("video_compare", self.combo_video_compare.currentIndex())
+        self.settings.setValue("parser_model", self._parser_model_key())
 
     def closeEvent(self, e):
         self._save_settings(); self.stop_video()
@@ -2789,7 +2888,8 @@ def cli_process(args):
     if not ensure_model():
         print(f"ERROR: Model not available. Download from:\n  {MODEL_URL}")
         sys.exit(1)
-    ensure_parsing_model()  # Non-fatal - falls back to landmark mask
+    parser_model = parser_model_key(args.parser_model)
+    ensure_parsing_model(parser_model)  # Non-fatal - falls back to landmark mask
     overrides = {k: getattr(args, k) for k in CLI_PARAM_KEYS
                  if hasattr(args, k) and getattr(args, k) is not None}
     try:
@@ -2804,7 +2904,7 @@ def cli_process(args):
     max_faces = args.faces or 1
 
     if args.manifest:
-        jobs = load_batch_manifest(args.manifest, args.output)
+        jobs = load_batch_manifest(args.manifest, args.output, parser_model)
         inputs = [job["input"] for job in jobs]
     else:
         inputs = media_files_from_paths(args.input)
@@ -2817,7 +2917,7 @@ def cli_process(args):
     os.makedirs(output_dir, exist_ok=True)
     if jobs is None:
         jobs = jobs_from_files(inputs, output_dir, params, max_faces, args.watermark,
-                               not args.strip_metadata, args.video_compare)
+                               not args.strip_metadata, args.video_compare, parser_model)
 
     print(f"\nFaceSlim v{VERSION} - CLI Mode")
     print(f"  GPU: {'ON (' + GPU_NAME + ')' if USE_GPU else 'OFF'}")
@@ -2833,13 +2933,14 @@ def cli_process(args):
         watermark = job.get("watermark", args.watermark)
         preserve_metadata = job.get("preserve_metadata", not args.strip_metadata)
         compare_mode = job.get("compare_mode", args.video_compare)
+        parser_model = job.get("parser_model", parser_model)
         fname = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
         print(f"  [{i+1}/{len(jobs)}] {fname}...", end=' ', flush=True)
 
         try:
             if ext in IMAGE_EXTS:
-                eng = FaceWarpEngine('image', max_faces)
+                eng = FaceWarpEngine('image', max_faces, parser_model)
                 img = cv2.imread(filepath)
                 if img is None: raise ValueError("Cannot read image")
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -2854,7 +2955,7 @@ def cli_process(args):
                 processed += 1
 
             elif ext in VIDEO_EXTS:
-                eng = FaceWarpEngine('video', max_faces)
+                eng = FaceWarpEngine('video', max_faces, parser_model)
                 eng.grid_scale = 6
                 cap = cv2.VideoCapture(filepath)
                 if not cap.isOpened(): raise ValueError("Cannot open video")
@@ -2947,6 +3048,8 @@ Examples:
     parser.add_argument('--strip-metadata', action='store_true', help='Do not preserve image EXIF/XMP/ICC metadata')
     parser.add_argument('--video-compare', choices=['none', 'split', 'side_by_side'], default='none',
                         help='Export processed video normally, split-screen, or side-by-side')
+    parser.add_argument('--parser-model', choices=list(PARSER_MODELS.keys()), default=DEFAULT_PARSER_MODEL,
+                        help='Face parsing model for beauty masks')
     parser.add_argument('--list-presets', action='store_true', help='List available presets')
 
     args = parser.parse_args()
@@ -2968,11 +3071,12 @@ Examples:
     if not ensure_model():
         print(f"ERROR: Could not obtain model.\nDownload from:\n  {MODEL_URL}\nPlace at:\n  {MODEL_PATH}")
         sys.exit(1)
-    ensure_parsing_model()  # Non-fatal - falls back to landmark mask
-
     if args.input or args.manifest:
         cli_process(args)
     else:
+        gui_settings = QSettings("FaceSlim", "FaceSlim")
+        gui_parser = parser_model_key(gui_settings.value("parser_model", DEFAULT_PARSER_MODEL, type=str))
+        ensure_parsing_model(gui_parser)  # Non-fatal - falls back to landmark mask
         # GUI mode
         app = QApplication(sys.argv)
         app.setStyle("Fusion"); app.setStyleSheet(DARK_STYLE)
