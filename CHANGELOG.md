@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.20.0 - 2026-06-28
+
+- Added shared media preflight checks for video export, batch jobs, and CLI processing.
+- Reported resolution, frame count/duration, output size, memory/time estimates, free disk space, output writability, and MP4 writer availability before long renders start.
+- Refused blocked or unsafe jobs before inference and logged preflight failures to `render.log`.
+
 ## FaceSlim v1.19.0 - 2026-06-28
 
 - Added accessible names and descriptions across primary GUI controls, sliders, toggles, combo boxes, and export/batch actions.

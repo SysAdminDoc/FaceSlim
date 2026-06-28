@@ -263,6 +263,88 @@ class BatchPipelineTests(unittest.TestCase):
             self.assertFalse(output_path.exists())
 
 
+class MediaPreflightTests(unittest.TestCase):
+    def test_image_preflight_refuses_directory_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            image_path = tmp_path / "input.png"
+            output_dir = tmp_path / "already_a_dir"
+            output_dir.mkdir()
+            cv2.imwrite(str(image_path), np.full((12, 12, 3), 160, dtype=np.uint8))
+
+            report = faceslim.preflight_media_job(str(image_path), str(output_dir))
+
+            self.assertFalse(report["ok"])
+            self.assertEqual(report["kind"], "image")
+            self.assertIn("directory", faceslim.preflight_failure_message(report))
+            self.assertIn("est output", faceslim.format_preflight_summary(report))
+
+    def test_video_preflight_reports_metrics_disk_and_codec(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            video_path = tmp_path / "input.mp4"
+            writer = cv2.VideoWriter(
+                str(video_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                5.0,
+                (16, 16),
+            )
+            if not writer.isOpened():
+                self.skipTest("OpenCV mp4v writer unavailable")
+            writer.write(np.full((16, 16, 3), 80, dtype=np.uint8))
+            writer.write(np.full((16, 16, 3), 120, dtype=np.uint8))
+            writer.release()
+
+            report = faceslim.preflight_media_job(
+                str(video_path),
+                str(tmp_path / "out" / "processed.mp4"),
+                "side_by_side",
+            )
+
+            self.assertTrue(report["ok"], report["errors"])
+            self.assertEqual(report["kind"], "video")
+            self.assertEqual(report["width"], 16)
+            self.assertEqual(report["output_width"], 32)
+            self.assertGreaterEqual(report["frame_count"], 1)
+            self.assertGreater(report["estimated_output_bytes"], 0)
+            self.assertGreater(report["estimated_memory_bytes"], 0)
+            self.assertGreater(report["available_disk_bytes"], 0)
+            self.assertTrue(report["codec_ok"])
+            self.assertIn("frames", faceslim.format_preflight_summary(report))
+
+    def test_batch_image_preflight_fails_before_engine_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            image_path = tmp_path / "input.png"
+            output_dir = tmp_path / "blocked_output.png"
+            output_dir.mkdir()
+            cv2.imwrite(str(image_path), np.full((8, 8, 3), 120, dtype=np.uint8))
+            original_engine = faceslim.FaceWarpEngine
+            faceslim.FaceWarpEngine = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("engine should not start after failed preflight")
+            )
+            try:
+                thread = faceslim.BatchThread(
+                    [str(image_path)],
+                    str(tmp_path),
+                    faceslim.DEFAULT_PARAMS.copy(),
+                )
+                with self.assertRaises(ValueError) as raised:
+                    thread._process_image({
+                        "input": str(image_path),
+                        "output": str(output_dir),
+                        "params": faceslim.DEFAULT_PARAMS.copy(),
+                        "max_faces": 1,
+                        "watermark": False,
+                        "preserve_metadata": True,
+                        "parser_model": faceslim.DEFAULT_PARSER_MODEL,
+                    }, 0)
+            finally:
+                faceslim.FaceWarpEngine = original_engine
+
+            self.assertIn("Preflight failed", str(raised.exception))
+
+
 class ProvenanceMetadataTests(unittest.TestCase):
     def test_png_export_contains_xmp_and_iptc_text(self):
         with tempfile.TemporaryDirectory() as tmp:

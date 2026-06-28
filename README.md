@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.19.0-blue)
+![Version](https://img.shields.io/badge/version-1.20.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -70,6 +70,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Batch Processing | Folder/multi-file image and video processing |
 | Batch Manifest | JSON jobs with per-file preset, face overrides, output, watermark, and compare settings |
 | Batch Queue Dialog | Per-file status, progress, ETA, and single-job cancellation |
+| Large-Media Preflight | Checks resolution, frame count, estimates, disk space, output writability, and MP4 codec support before long renders |
 | CLI Mode | Headless with presets and per-param control |
 | Docker CLI Image | Headless container build for farm rendering |
 | Metadata Preservation | Image exports preserve source EXIF/ICC metadata by default and embed FaceSlim provenance |
@@ -256,6 +257,8 @@ Custom presets are stored as JSON in:
 
 Slider values persist between sessions via Qt settings. Crash logs are written to `crash.log`; render/export diagnostics are written as JSON lines to `render.log` in the application directory.
 The first GUI launch shows a responsible-use acknowledgement and stores it in Qt settings after acceptance.
+
+Video exports, batch jobs, and CLI processing run a preflight before long renders start. The preflight reports input resolution, frame count or duration, estimated output size, estimated memory and render time, free disk space, output writability, and MP4 writer availability. Jobs with missing input, unsupported media, blocked output paths, unavailable codec support, or insufficient disk are refused with a `render.log` diagnostic entry.
 
 ## Provenance Metadata
 

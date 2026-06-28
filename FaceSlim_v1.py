@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.19.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.20.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -16,7 +16,7 @@ Dependencies install from requirements.txt; models download on first use.
 import multiprocessing
 multiprocessing.freeze_support()
 
-import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob, threading, hashlib
+import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob, threading, hashlib, shutil
 from collections import deque
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
@@ -96,7 +96,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.19.0"
+VERSION = "1.20.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RENDER_LOG_PATH = os.path.join(APP_DIR, 'render.log')
 IPTC_DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced"
@@ -1160,6 +1160,265 @@ def format_timecode(seconds):
     if hours:
         return f"{hours}:{mins:02d}:{secs:02d}"
     return f"{mins}:{secs:02d}"
+
+
+PREFLIGHT_DISK_RESERVE_BYTES = 64 * 1024 * 1024
+PREFLIGHT_DISK_SAFETY_MULTIPLIER = 1.25
+PREFLIGHT_VIDEO_BYTES_PER_PIXEL_FRAME = 0.08
+PREFLIGHT_IMAGE_BUFFER_MULTIPLIER = 5
+
+
+def format_bytes(size_bytes):
+    if size_bytes is None:
+        return "--"
+    try:
+        value = float(size_bytes)
+    except (TypeError, ValueError):
+        return "--"
+    if value < 0:
+        return "--"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def media_job_output_path(job, output_dir, source_path, output_ext):
+    return job.get("output") or os.path.join(
+        job.get("output_dir", output_dir),
+        os.path.splitext(os.path.basename(source_path))[0] + f"_slimmed{output_ext}",
+    )
+
+
+def _safe_file_size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def _existing_parent(path):
+    target = os.path.abspath(path or ".")
+    if os.path.isdir(target):
+        return target
+    target = os.path.dirname(target) or os.getcwd()
+    while target and not os.path.exists(target):
+        parent = os.path.dirname(target)
+        if parent == target:
+            break
+        target = parent
+    return target or os.getcwd()
+
+
+def _disk_free_bytes(path):
+    try:
+        return shutil.disk_usage(_existing_parent(path)).free
+    except OSError:
+        return None
+
+
+def _probe_writable_output(output_path):
+    if not output_path:
+        return False, "Missing output path"
+    if os.path.isdir(output_path):
+        return False, f"Output path is a directory: {output_path}"
+    parent = os.path.dirname(os.path.abspath(output_path)) or os.getcwd()
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as e:
+        return False, f"Cannot create output directory: {e}"
+    test_path = os.path.join(parent, f".faceslim-write-test-{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        with open(test_path, "wb") as f:
+            f.write(b"")
+        return True, "writable"
+    except OSError as e:
+        return False, f"Output is not writable: {e}"
+    finally:
+        _remove_quietly(test_path)
+
+
+def _probe_video_writer(output_path, fps, width, height):
+    writable, detail = _probe_writable_output(output_path)
+    if not writable:
+        return False, detail
+    if width <= 0 or height <= 0:
+        return False, "Cannot verify codec without output dimensions"
+    parent = os.path.dirname(os.path.abspath(output_path)) or os.getcwd()
+    probe_path = os.path.join(parent, f".faceslim-writer-probe-{os.getpid()}-{threading.get_ident()}.mp4")
+    writer = None
+    try:
+        writer = cv2.VideoWriter(probe_path, cv2.VideoWriter_fourcc(*"mp4v"),
+                                 float(fps or 30), (int(width), int(height)))
+        ok = bool(writer.isOpened())
+        return ok, "mp4v writer available" if ok else "OpenCV mp4v writer is unavailable"
+    except Exception as e:
+        return False, f"OpenCV writer probe failed: {e}"
+    finally:
+        if writer is not None:
+            writer.release()
+        _remove_quietly(probe_path)
+
+
+def _add_disk_guardrail(report, output_path):
+    report["available_disk_bytes"] = _disk_free_bytes(output_path)
+    estimate = report.get("estimated_output_bytes")
+    free_bytes = report.get("available_disk_bytes")
+    if estimate is None or free_bytes is None:
+        return
+    required = int(estimate * PREFLIGHT_DISK_SAFETY_MULTIPLIER) + PREFLIGHT_DISK_RESERVE_BYTES
+    report["required_disk_bytes"] = required
+    if free_bytes < required:
+        report["errors"].append(
+            f"Insufficient disk space: need about {format_bytes(required)}, "
+            f"available {format_bytes(free_bytes)}"
+        )
+
+
+def preflight_media_job(input_path, output_path, compare_mode="none"):
+    report = {
+        "ok": False,
+        "input": input_path,
+        "output": output_path,
+        "kind": "unknown",
+        "errors": [],
+        "warnings": [],
+        "input_size_bytes": _safe_file_size(input_path),
+        "estimated_output_bytes": None,
+        "estimated_memory_bytes": None,
+        "estimated_time_seconds": None,
+        "available_disk_bytes": None,
+        "required_disk_bytes": None,
+        "codec_ok": None,
+        "output_writable": False,
+    }
+    ext = os.path.splitext(input_path or "")[1].lower()
+    if not input_path or not os.path.exists(input_path):
+        report["errors"].append(f"Input not found: {input_path}")
+        return report
+    if ext not in IMAGE_EXTS | VIDEO_EXTS:
+        report["errors"].append(f"Unsupported media type: {ext or 'none'}")
+        return report
+
+    if ext in IMAGE_EXTS:
+        report["kind"] = "image"
+        try:
+            with PILImage.open(input_path) as image:
+                width, height = image.size
+                bands = len(image.getbands()) or 3
+        except Exception as e:
+            report["errors"].append(f"Cannot read image header: {e}")
+            return report
+        pixel_bytes = max(1, int(width) * int(height) * max(3, bands))
+        out_ext = os.path.splitext(output_path or "")[1].lower()
+        if out_ext in {".jpg", ".jpeg", ".webp"}:
+            estimated_output = max(64 * 1024, int(pixel_bytes * 0.7))
+        else:
+            estimated_output = max(64 * 1024, int(width) * int(height) * 4)
+        megapixels = (int(width) * int(height)) / 1_000_000
+        writable, detail = _probe_writable_output(output_path)
+        report.update({
+            "width": int(width),
+            "height": int(height),
+            "frame_count": 1,
+            "duration_seconds": 0,
+            "fps": None,
+            "estimated_output_bytes": estimated_output,
+            "estimated_memory_bytes": int(pixel_bytes * PREFLIGHT_IMAGE_BUFFER_MULTIPLIER),
+            "estimated_time_seconds": max(1, int(math.ceil(max(0.2, megapixels * 0.8)))),
+            "output_writable": writable,
+            "output_detail": detail,
+        })
+        if not writable:
+            report["errors"].append(detail)
+        _add_disk_guardrail(report, output_path)
+        report["ok"] = not report["errors"]
+        return report
+
+    report["kind"] = "video"
+    cap = cv2.VideoCapture(input_path)
+    try:
+        if not cap.isOpened():
+            report["errors"].append(f"Cannot open video: {input_path}")
+            return report
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        if width <= 0 or height <= 0:
+            report["errors"].append("Cannot determine video resolution")
+        if fps <= 0 or not math.isfinite(fps):
+            fps = 30.0
+            report["warnings"].append("Video FPS is unknown; estimating at 30 FPS")
+        if frame_count <= 0:
+            report["warnings"].append("Frame count is unknown; progress and size estimates are conservative")
+        out_w, out_h = video_output_size(width, height, compare_mode)
+        estimated_frames = max(frame_count, 1)
+        estimated_output = max(
+            report["input_size_bytes"] or 0,
+            int(out_w * out_h * estimated_frames * PREFLIGHT_VIDEO_BYTES_PER_PIXEL_FRAME),
+            256 * 1024,
+        )
+        megapixels = (max(out_w, 1) * max(out_h, 1)) / 1_000_000
+        codec_ok, codec_detail = _probe_video_writer(output_path, fps, out_w, out_h)
+        report.update({
+            "width": width,
+            "height": height,
+            "output_width": out_w,
+            "output_height": out_h,
+            "frame_count": frame_count,
+            "duration_seconds": (frame_count / fps) if frame_count > 0 else None,
+            "fps": fps,
+            "estimated_output_bytes": estimated_output,
+            "estimated_memory_bytes": int(max(out_w, 1) * max(out_h, 1) * 3 * 8),
+            "estimated_time_seconds": int(math.ceil(estimated_frames * max(0.03, megapixels * 0.08))),
+            "codec_ok": codec_ok,
+            "codec_detail": codec_detail,
+            "output_writable": codec_ok,
+        })
+        if not codec_ok:
+            report["errors"].append(codec_detail)
+        _add_disk_guardrail(report, output_path)
+        report["ok"] = not report["errors"]
+        return report
+    finally:
+        cap.release()
+
+
+def format_preflight_summary(report):
+    if not report:
+        return "Preflight unavailable"
+    kind = report.get("kind", "media")
+    size = f"{report.get('width', 0)}x{report.get('height', 0)}"
+    output_size = format_bytes(report.get("estimated_output_bytes"))
+    memory = format_bytes(report.get("estimated_memory_bytes"))
+    disk = format_bytes(report.get("available_disk_bytes"))
+    eta = format_duration(report.get("estimated_time_seconds"))
+    if kind == "video":
+        frames = report.get("frame_count") or "unknown"
+        fps = report.get("fps")
+        fps_text = f"{fps:.2f} fps" if fps else "unknown fps"
+        duration = format_timecode(report.get("duration_seconds"))
+        out_size = f"{report.get('output_width', 0)}x{report.get('output_height', 0)}"
+        codec = "OK" if report.get("codec_ok") else "failed"
+        return (
+            f"Preflight: video {size}->{out_size}, {frames} frames, {duration}, {fps_text}; "
+            f"est output {output_size}, est memory {memory}, est time {eta}, free disk {disk}, codec {codec}"
+        )
+    return (
+        f"Preflight: image {size}; est output {output_size}, est memory {memory}, "
+        f"est time {eta}, free disk {disk}, output {'writable' if report.get('output_writable') else 'blocked'}"
+    )
+
+
+def preflight_failure_message(report):
+    if not report:
+        return "preflight unavailable"
+    return "; ".join(report.get("errors") or ["unknown preflight failure"])
 
 
 def _manifest_path(base_dir, path_value):
@@ -2328,6 +2587,17 @@ class ExportThread(QThread):
         cap = None
         writer = None
         try:
+            preflight = preflight_media_job(self.inp, self.out, self.compare_mode)
+            self.status.emit(format_preflight_summary(preflight))
+            if not preflight["ok"]:
+                msg = preflight_failure_message(preflight)
+                log_render_event("export_preflight_failed", msg, {
+                    "input": self.inp,
+                    "output": self.out,
+                    "preflight": preflight,
+                })
+                self.error.emit(f"Preflight failed: {msg} (see render.log)")
+                return
             eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
             eng.grid_scale = 6
             cap = cv2.VideoCapture(self.inp)
@@ -2547,7 +2817,19 @@ class BatchThread(QThread):
         filepath = job["input"]
         params = job.get("params", self.params)
         eng = None
+        out_path = media_job_output_path(job, self.output_dir, filepath, ".png")
         try:
+            preflight = preflight_media_job(filepath, out_path, job.get("compare_mode", self.compare_mode))
+            self.job_update.emit(index, "Processing", 5, format_preflight_summary(preflight), "--")
+            if not preflight["ok"]:
+                msg = preflight_failure_message(preflight)
+                log_render_event("batch_preflight_failed", msg, {
+                    "input": filepath,
+                    "output": out_path,
+                    "job_index": index,
+                    "preflight": preflight,
+                })
+                raise ValueError(f"Preflight failed: {msg}")
             self.job_update.emit(index, "Processing", 20, "Reading image", "--")
             eng = FaceWarpEngine('image', job.get("max_faces", self.max_faces),
                                  job.get("parser_model", self.parser_model))
@@ -2560,8 +2842,6 @@ class BatchThread(QThread):
             if self.cancelled or self._job_cancelled(index):
                 return False
             result = apply_disclosure_watermark(result, job.get("watermark", self.watermark))
-            out_path = job.get("output") or os.path.join(job.get("output_dir", self.output_dir),
-                os.path.splitext(os.path.basename(filepath))[0] + '_slimmed.png')
             out_dir = os.path.dirname(out_path)
             if out_dir:
                 os.makedirs(out_dir, exist_ok=True)
@@ -2584,9 +2864,19 @@ class BatchThread(QThread):
         eng = None
         cap = None
         writer = None
-        out_path = job.get("output") or os.path.join(job.get("output_dir", self.output_dir),
-            os.path.splitext(os.path.basename(filepath))[0] + '_slimmed.mp4')
+        out_path = media_job_output_path(job, self.output_dir, filepath, ".mp4")
         try:
+            preflight = preflight_media_job(filepath, out_path, compare_mode)
+            self.job_update.emit(index, "Processing", 5, format_preflight_summary(preflight), "--")
+            if not preflight["ok"]:
+                msg = preflight_failure_message(preflight)
+                log_render_event("batch_preflight_failed", msg, {
+                    "input": filepath,
+                    "output": out_path,
+                    "job_index": index,
+                    "preflight": preflight,
+                })
+                raise ValueError(f"Preflight failed: {msg}")
             eng = FaceWarpEngine('video', max_faces, job.get("parser_model", self.parser_model))
             eng.grid_scale = 6
             cap = cv2.VideoCapture(filepath)
@@ -3957,28 +4247,54 @@ def cli_process(args):
         parser_model = job.get("parser_model", parser_model)
         fname = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
-        print(f"  [{i+1}/{len(jobs)}] {fname}...", end=' ', flush=True)
+        print(f"  [{i+1}/{len(jobs)}] {fname}")
         eng = None
         cap = None
         writer = None
 
         try:
             if ext in IMAGE_EXTS:
+                out_path = media_job_output_path(job, output_dir, filepath, ".png")
+                preflight = preflight_media_job(filepath, out_path, compare_mode)
+                print(f"    {format_preflight_summary(preflight)}")
+                if not preflight["ok"]:
+                    msg = preflight_failure_message(preflight)
+                    print(f"    FAIL preflight: {msg}")
+                    log_render_event("cli_preflight_failed", msg, {
+                        "input": filepath,
+                        "output": out_path,
+                        "job_index": i,
+                        "preflight": preflight,
+                    })
+                    failed += 1
+                    continue
                 eng = FaceWarpEngine('image', max_faces, parser_model)
                 img = cv2.imread(filepath)
                 if img is None: raise ValueError("Cannot read image")
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 result, faces = eng.warp_single_image(rgb, params)
                 result = apply_disclosure_watermark(result, watermark)
-                out_path = job.get("output") or os.path.join(job.get("output_dir", output_dir),
-                    os.path.splitext(fname)[0] + '_slimmed.png')
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 save_rgb_image(out_path, result, filepath, preserve_metadata, watermark)
                 eng.close(); eng = None
-                print(f"OK ({len(faces)} face{'s' if len(faces) != 1 else ''})")
+                print(f"    OK ({len(faces)} face{'s' if len(faces) != 1 else ''})")
                 processed += 1
 
             elif ext in VIDEO_EXTS:
+                out_path = media_job_output_path(job, output_dir, filepath, ".mp4")
+                preflight = preflight_media_job(filepath, out_path, compare_mode)
+                print(f"    {format_preflight_summary(preflight)}")
+                if not preflight["ok"]:
+                    msg = preflight_failure_message(preflight)
+                    print(f"    FAIL preflight: {msg}")
+                    log_render_event("cli_preflight_failed", msg, {
+                        "input": filepath,
+                        "output": out_path,
+                        "job_index": i,
+                        "preflight": preflight,
+                    })
+                    failed += 1
+                    continue
                 eng = FaceWarpEngine('video', max_faces, parser_model)
                 eng.grid_scale = 6
                 cap = cv2.VideoCapture(filepath)
@@ -3986,8 +4302,6 @@ def cli_process(args):
                 total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 fps = cap.get(cv2.CAP_PROP_FPS) or 30
                 w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                out_path = job.get("output") or os.path.join(job.get("output_dir", output_dir),
-                    os.path.splitext(fname)[0] + '_slimmed.mp4')
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 out_w, out_h = video_output_size(w, h, compare_mode)
                 writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
@@ -4014,7 +4328,7 @@ def cli_process(args):
                 print(f"\r  [{i+1}/{len(jobs)}] {fname}... OK ({total} frames, {elapsed:.1f}s)")
                 processed += 1
             else:
-                print(f"SKIP (unsupported)")
+                print(f"    SKIP (unsupported)")
                 log_render_event("cli_unsupported_media", "Unsupported file type", {
                     "input": filepath,
                     "job_index": i,
