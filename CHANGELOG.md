@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.17.0 - 2026-06-28
+
+- Added `tools/bootstrap_dev.py` to create or repair `.venv`, reinstall requirements, and run local verification from one command.
+- Added stale `pyvenv.cfg` base-interpreter detection so copied or broken virtual environments are rebuilt automatically.
+- Documented the bootstrap command in Quick Start and requirements setup.
+
 ## FaceSlim v1.16.0 - 2026-06-28
 
 - Added JSON-lines `render.log` diagnostics for export, batch, CLI, frame-processing, and FFmpeg mux failures.

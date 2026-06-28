@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.16.0-blue)
+![Version](https://img.shields.io/badge/version-1.17.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -13,9 +13,8 @@
 ```bash
 git clone https://github.com/SysAdminDoc/FaceSlim.git
 cd FaceSlim
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-python FaceSlim_v1.py
+python tools/bootstrap_dev.py
+.venv\Scripts\python FaceSlim_v1.py
 ```
 
 On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected BiSeNet parsing model (~50-94 MB), and MODNet (~25 MB) only when matting refinement is enabled. Python dependencies are installed through `requirements.txt`.
@@ -271,7 +270,8 @@ The face landmarker and selected parser model are downloaded automatically on fi
 ## Requirements
 
 - **Python 3.9+**
-- **Install:** `python -m pip install -r requirements.txt`
+- **One-command setup:** `python tools/bootstrap_dev.py`
+- **Manual install:** `python -m venv .venv && .venv\Scripts\python -m pip install -r requirements.txt`
 - **Optional:** PyTorch + CUDA for GPU acceleration (auto-detected)
 - **Optional:** FFmpeg for audio muxing on video exports
 - **Optional:** OBS Virtual Camera driver for the Virtual Cam preview output
@@ -282,6 +282,8 @@ The face landmarker and selected parser model are downloaded automatically on fi
 python -m pip install -r requirements.txt
 pyinstaller FaceSlim.spec --noconfirm --clean
 ```
+
+If `.venv` was copied from another machine or points at a stale base interpreter, run `python tools/bootstrap_dev.py`; it recreates the venv when needed, installs requirements, compiles the launchers, and runs `--list-presets`.
 
 Run the local regression suite with:
 
