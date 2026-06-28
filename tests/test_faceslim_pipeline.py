@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 import cv2
@@ -122,34 +123,77 @@ class CliAndManifestTests(unittest.TestCase):
 
 
 class BatchPipelineTests(unittest.TestCase):
+    def _with_temp_render_log(self, tmp_path):
+        old_path = faceslim.RENDER_LOG_PATH
+        faceslim.RENDER_LOG_PATH = str(Path(tmp_path) / "render.log")
+        return old_path
+
     def test_unsupported_media_job_reports_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
+            old_log = self._with_temp_render_log(tmp)
             text_path = Path(tmp) / "notes.txt"
             text_path.write_text("not media", encoding="utf-8")
             done = []
             updates = []
-            thread = faceslim.BatchThread(
-                [str(text_path)],
-                str(Path(tmp) / "out"),
-                faceslim.DEFAULT_PARAMS.copy(),
-                jobs=[{
-                    "input": str(text_path),
-                    "output_dir": str(Path(tmp) / "out"),
-                    "params": faceslim.DEFAULT_PARAMS.copy(),
-                    "max_faces": 1,
-                    "watermark": False,
-                    "preserve_metadata": True,
-                    "compare_mode": "none",
-                    "parser_model": faceslim.DEFAULT_PARSER_MODEL,
-                }],
-            )
-            thread.job_update.connect(lambda *args: updates.append(args))
-            thread.finished.connect(lambda *args: done.append(args))
+            try:
+                thread = faceslim.BatchThread(
+                    [str(text_path)],
+                    str(Path(tmp) / "out"),
+                    faceslim.DEFAULT_PARAMS.copy(),
+                    jobs=[{
+                        "input": str(text_path),
+                        "output_dir": str(Path(tmp) / "out"),
+                        "params": faceslim.DEFAULT_PARAMS.copy(),
+                        "max_faces": 1,
+                        "watermark": False,
+                        "preserve_metadata": True,
+                        "compare_mode": "none",
+                        "parser_model": faceslim.DEFAULT_PARSER_MODEL,
+                    }],
+                )
+                thread.job_update.connect(lambda *args: updates.append(args))
+                thread.finished.connect(lambda *args: done.append(args))
 
-            thread.run()
+                thread.run()
+            finally:
+                faceslim.RENDER_LOG_PATH = old_log
 
             self.assertEqual(done[-1], (0, 1, 0))
             self.assertIn("Unsupported file type", updates[-1][3])
+            self.assertIn("batch_unsupported_media", (Path(tmp) / "render.log").read_text(encoding="utf-8"))
+
+    def test_cli_failure_logs_and_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_log = self._with_temp_render_log(tmp)
+            old_ensure_model = faceslim.ensure_model
+            old_ensure_parsing = faceslim.ensure_parsing_model
+            text_path = Path(tmp) / "notes.txt"
+            text_path.write_text("not media", encoding="utf-8")
+            args = SimpleNamespace(
+                input=[str(text_path)],
+                output=str(Path(tmp) / "out"),
+                parser_model=faceslim.DEFAULT_PARSER_MODEL,
+                preset=None,
+                face_preset=[],
+                face_param=[],
+                manifest=None,
+                faces=1,
+                watermark=False,
+                strip_metadata=False,
+                video_compare="none",
+            )
+            try:
+                faceslim.ensure_model = lambda: True
+                faceslim.ensure_parsing_model = lambda _model: True
+                with self.assertRaises(SystemExit) as raised:
+                    faceslim.cli_process(args)
+            finally:
+                faceslim.ensure_model = old_ensure_model
+                faceslim.ensure_parsing_model = old_ensure_parsing
+                faceslim.RENDER_LOG_PATH = old_log
+
+            self.assertEqual(raised.exception.code, 1)
+            self.assertIn("cli_unsupported_media", (Path(tmp) / "render.log").read_text(encoding="utf-8"))
 
     def test_image_export_smoke_uses_pipeline_save_path(self):
         with tempfile.TemporaryDirectory() as tmp:

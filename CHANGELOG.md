@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.16.0 - 2026-06-28
+
+- Added JSON-lines `render.log` diagnostics for export, batch, CLI, frame-processing, and FFmpeg mux failures.
+- Kept rendered video output intact when FFmpeg audio muxing fails and surfaced the warning in GUI status.
+- Made CLI processing return a non-zero exit code when any requested media job fails.
+
 ## FaceSlim v1.15.0 - 2026-06-28
 
 - Added exact-size and SHA-256 verification for all auto-downloaded model artifacts.

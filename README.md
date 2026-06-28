@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.15.0-blue)
+![Version](https://img.shields.io/badge/version-1.16.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -254,7 +254,7 @@ Custom presets are stored as JSON in:
 | Windows | `%APPDATA%\.faceslim\presets\` |
 | macOS/Linux | `~/.faceslim/presets/` |
 
-Slider values persist between sessions via Qt settings. Crash logs are written to `crash.log` in the application directory.
+Slider values persist between sessions via Qt settings. Crash logs are written to `crash.log`; render/export diagnostics are written as JSON lines to `render.log` in the application directory.
 The first GUI launch shows a responsible-use acknowledgement and stores it in Qt settings after acceptance.
 
 ## Models (Auto-Downloaded)
@@ -329,6 +329,9 @@ Ensure the face is reasonably front-facing and well-lit. MediaPipe requires a mi
 
 **Crash on startup**
 Check `crash.log` in the application directory. Common causes: incompatible Python version (<3.9), missing system libraries for PyQt5 on Linux (install `libxcb-xinerama0`), or corrupted model files (delete `.task`/`.onnx` files and relaunch to re-download).
+
+**Export or audio mux fails**
+Check `render.log` in the application directory. FaceSlim keeps the rendered video if FFmpeg audio muxing fails and reports non-zero from CLI runs when any requested job fails.
 
 ## License
 

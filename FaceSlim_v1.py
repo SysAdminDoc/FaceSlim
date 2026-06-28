@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.15.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.16.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -95,8 +95,9 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.15.0"
+VERSION = "1.16.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+RENDER_LOG_PATH = os.path.join(APP_DIR, 'render.log')
 CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), '.faceslim')
 PRESETS_DIR = os.path.join(CONFIG_DIR, 'presets')
 os.makedirs(PRESETS_DIR, exist_ok=True)
@@ -116,6 +117,30 @@ def exception_handler(exc_type, exc_value, exc_tb):
     sys.exit(1)
 
 sys.excepthook = exception_handler
+
+def _decode_process_output(data):
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return str(data)
+
+def log_render_event(kind, message, context=None, exc_text=None):
+    record = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "version": VERSION,
+        "kind": kind,
+        "message": str(message),
+        "context": context or {},
+    }
+    if exc_text:
+        record["traceback"] = exc_text
+    try:
+        with open(RENDER_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=True, sort_keys=True) + "\n")
+    except Exception:
+        pass
+    return RENDER_LOG_PATH
 
 MODEL_MANIFEST_VERSION = 1
 LANDMARK_MODEL = {
@@ -2014,6 +2039,7 @@ class VideoThread(QThread):
         self.virtualcam_enabled = False
         self._seek_seconds = None
         self._seek_lock = threading.Lock()
+        self._last_frame_error_log = 0.0
 
     def set_source(self, s): self.source = s
     def update_params(self, p): self.params = p.copy()
@@ -2118,11 +2144,23 @@ class VideoThread(QThread):
 
                     self.frame_ready.emit(rgb, proc, faces, teeth_hint_rois)
                 except Exception as e:
-                    print(f"Frame processing error: {e}")
+                    msg = f"Frame processing error: {e}"
+                    now = time.time()
+                    if now - self._last_frame_error_log > 2.0:
+                        log_render_event("video_frame_error", msg, {
+                            "source": self.source if self.source is not None else "webcam",
+                        }, traceback.format_exc())
+                        self.status_update.emit(f"{msg} (see render.log)")
+                        self._last_frame_error_log = now
+                    print(msg)
 
                 self.msleep(1)
         except Exception as e:
-            self.error_update.emit(f"Video error: {e}")
+            msg = f"Video error: {e}"
+            log_render_event("video_thread_error", msg, {
+                "source": self.source if self.source is not None else "webcam",
+            }, traceback.format_exc())
+            self.error_update.emit(f"{msg} (see render.log)")
             print(f"VideoThread fatal: {e}")
         finally:
             if cap is not None:
@@ -2159,17 +2197,24 @@ class ExportThread(QThread):
         self.cancelled = True
 
     def run(self):
+        eng = None
+        cap = None
+        writer = None
         try:
             eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
             eng.grid_scale = 6
             cap = cv2.VideoCapture(self.inp)
             if not cap.isOpened():
-                self.error.emit("Cannot open input"); return
+                msg = "Cannot open input"
+                log_render_event("export_open_failed", msg, {"input": self.inp, "output": self.out})
+                self.error.emit(f"{msg} (see render.log)"); return
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 30
             w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             out_w, out_h = video_output_size(w, h, self.compare_mode)
             writer = cv2.VideoWriter(self.out, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
+            if not writer.isOpened():
+                raise ValueError(f"Cannot open output writer: {self.out}")
             self.status.emit(f"Exporting {total} frames...")
             has_fx = any(abs(self.params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
             t_start = time.time()
@@ -2191,7 +2236,9 @@ class ExportThread(QThread):
                         eta = (elapsed / (i+1)) * (total - i - 1)
                         mins, secs = divmod(int(eta), 60)
                         self.status.emit(f"Frame {i+1}/{total} | ETA: {mins}m {secs}s")
-            cap.release(); writer.release(); eng.close()
+            cap.release(); cap = None
+            writer.release(); writer = None
+            eng.close(); eng = None
             if not self.cancelled:
                 self._mux_audio()
                 elapsed_total = time.time() - t_start
@@ -2199,24 +2246,63 @@ class ExportThread(QThread):
                 self.status.emit(f"Done in {mins}m {secs}s")
                 self.finished.emit(self.out)
         except Exception as e:
-            self.error.emit(str(e))
+            log_render_event("export_failed", str(e), {
+                "input": self.inp,
+                "output": self.out,
+                "compare_mode": self.compare_mode,
+            }, traceback.format_exc())
+            self.error.emit(f"{e} (see render.log)")
+        finally:
+            if cap is not None:
+                cap.release()
+            if writer is not None:
+                writer.release()
+            if eng is not None:
+                eng.close()
 
     def _mux_audio(self):
+        base, ext = os.path.splitext(self.out)
+        tmp = base + '_mux' + ext
         try:
-            base, ext = os.path.splitext(self.out)
-            tmp = base + '_mux' + ext
             r = subprocess.run(['ffmpeg','-y','-i',self.out,'-i',self.inp,
                 '-c:v','copy','-c:a','aac','-map','0:v:0','-map','1:a:0?',
                 '-shortest',tmp], capture_output=True, timeout=600)
             if r.returncode == 0 and os.path.exists(tmp):
                 os.replace(tmp, self.out)
-            elif os.path.exists(tmp):
+                self.status.emit("Audio mux complete")
+                return True
+            stderr = _decode_process_output(r.stderr).strip()
+            log_render_event("audio_mux_failed", "FFmpeg audio mux failed; keeping rendered video.", {
+                "input": self.inp,
+                "output": self.out,
+                "returncode": r.returncode,
+                "stderr": stderr[-4000:],
+            })
+            self.status.emit("Audio mux failed; video kept (see render.log)")
+            if os.path.exists(tmp):
                 try: os.remove(tmp)
                 except OSError: pass
+            return False
         except FileNotFoundError:
-            pass  # ffmpeg not installed
-        except Exception:
-            pass
+            log_render_event("audio_mux_unavailable", "FFmpeg not found; keeping rendered video without audio.", {
+                "input": self.inp,
+                "output": self.out,
+            })
+            self.status.emit("FFmpeg not found; video kept without audio (see render.log)")
+            if os.path.exists(tmp):
+                try: os.remove(tmp)
+                except OSError: pass
+            return False
+        except Exception as e:
+            log_render_event("audio_mux_error", str(e), {
+                "input": self.inp,
+                "output": self.out,
+            }, traceback.format_exc())
+            self.status.emit("Audio mux error; video kept (see render.log)")
+            if os.path.exists(tmp):
+                try: os.remove(tmp)
+                except OSError: pass
+            return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2298,6 +2384,10 @@ class BatchThread(QThread):
                     else:
                         ok = False
                         failed += 1
+                        log_render_event("batch_unsupported_media", "Unsupported file type", {
+                            "input": filepath,
+                            "job_index": i,
+                        })
                         self.job_update.emit(i, "Failed", 100, "Unsupported file type", "--")
                     if ext in IMAGE_EXTS | VIDEO_EXTS:
                         if ok:
@@ -2308,6 +2398,10 @@ class BatchThread(QThread):
                             self.job_update.emit(i, "Skipped", 100, "Cancelled", "--")
                 except Exception as e:
                     print(f"Batch error {fname}: {e}")
+                    log_render_event("batch_job_failed", str(e), {
+                        "input": filepath,
+                        "job_index": i,
+                    }, traceback.format_exc())
                     failed += 1
                     self.job_update.emit(i, "Failed", 100, str(e), "--")
 
@@ -2315,6 +2409,9 @@ class BatchThread(QThread):
 
             self.finished.emit(processed, failed, skipped)
         except Exception as e:
+            log_render_event("batch_failed", str(e), {
+                "output_dir": self.output_dir,
+            }, traceback.format_exc())
             self.error.emit(str(e))
 
     def _process_image(self, job, index):
@@ -2375,6 +2472,8 @@ class BatchThread(QThread):
                 os.makedirs(out_dir, exist_ok=True)
             out_w, out_h = video_output_size(w, h, compare_mode)
             writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
+            if not writer.isOpened():
+                raise ValueError(f"Cannot open output writer: {out_path}")
             has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
             total = max(total, 1)
             started_at = time.time()
@@ -3608,6 +3707,9 @@ def cli_process(args):
         fname = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
         print(f"  [{i+1}/{len(jobs)}] {fname}...", end=' ', flush=True)
+        eng = None
+        cap = None
+        writer = None
 
         try:
             if ext in IMAGE_EXTS:
@@ -3621,7 +3723,7 @@ def cli_process(args):
                     os.path.splitext(fname)[0] + '_slimmed.png')
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 save_rgb_image(out_path, result, filepath, preserve_metadata)
-                eng.close()
+                eng.close(); eng = None
                 print(f"OK ({len(faces)} face{'s' if len(faces) != 1 else ''})")
                 processed += 1
 
@@ -3638,6 +3740,8 @@ def cli_process(args):
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 out_w, out_h = video_output_size(w, h, compare_mode)
                 writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
+                if not writer.isOpened():
+                    raise ValueError(f"Cannot open output writer: {out_path}")
                 has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
                 t0 = time.time()
                 for fi in range(total):
@@ -3652,19 +3756,40 @@ def cli_process(args):
                     if fi % 30 == 0 and fi > 0:
                         eta = ((time.time() - t0) / fi) * (total - fi)
                         print(f"\r  [{i+1}/{len(jobs)}] {fname}... {fi}/{total} frames (ETA: {int(eta)}s)", end='', flush=True)
-                cap.release(); writer.release(); eng.close()
+                cap.release(); cap = None
+                writer.release(); writer = None
+                eng.close(); eng = None
                 elapsed = time.time() - t0
                 print(f"\r  [{i+1}/{len(jobs)}] {fname}... OK ({total} frames, {elapsed:.1f}s)")
                 processed += 1
             else:
                 print(f"SKIP (unsupported)")
+                log_render_event("cli_unsupported_media", "Unsupported file type", {
+                    "input": filepath,
+                    "job_index": i,
+                })
                 failed += 1
         except Exception as e:
             print(f"FAIL ({e})")
+            log_render_event("cli_job_failed", str(e), {
+                "input": filepath,
+                "job_index": i,
+                "output_dir": output_dir,
+            }, traceback.format_exc())
             failed += 1
+        finally:
+            if cap is not None:
+                cap.release()
+            if writer is not None:
+                writer.release()
+            if eng is not None:
+                eng.close()
 
     print(f"\nDone: {processed} processed, {failed} failed")
     print(f"Output: {output_dir}")
+    if failed:
+        print(f"Render diagnostics: {RENDER_LOG_PATH}")
+        sys.exit(1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

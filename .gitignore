@@ -23,6 +23,7 @@ bisenet_face_parsing.onnx
 modnet_*.onnx
 *.tmp
 crash.log
+render.log
 faceslim_output/
 
 # AI config
