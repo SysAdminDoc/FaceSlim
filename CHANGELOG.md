@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.10.0 - 2026-06-28
+
+- Added a batch queue dialog with per-file status, progress, ETA, and single-job cancellation.
+- Added worker-side skip handling so queued or current video jobs can be cancelled without aborting the batch.
+
 ## FaceSlim v1.9.0 - 2026-06-28
 
 - Added a visual-only Teeth Mask preview overlay for the BiSeNet mouth-interior whitening target.

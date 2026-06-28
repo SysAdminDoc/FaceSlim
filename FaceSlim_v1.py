@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.9.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.10.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -16,7 +16,7 @@ Dependencies install from requirements.txt; models download on first use.
 import multiprocessing
 multiprocessing.freeze_support()
 
-import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob
+import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob, threading
 from collections import deque
 from pathlib import Path
 
@@ -61,7 +61,8 @@ from PyQt5.QtWidgets import (
     QLabel, QSlider, QPushButton, QFileDialog, QGroupBox,
     QProgressBar, QCheckBox, QGridLayout, QSizePolicy,
     QTabWidget, QScrollArea, QInputDialog, QSpinBox, QComboBox,
-    QFrame
+    QFrame, QDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+    QAbstractItemView
 )
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QSettings, QTimer
@@ -87,7 +88,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -946,6 +947,19 @@ def media_files_from_paths(paths):
         else:
             print(f"Warning: {inp} not found, skipping")
     return sorted(inputs)
+
+
+def format_duration(seconds):
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return "--"
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {mins}m"
+    if mins:
+        return f"{mins}m {secs}s"
+    return f"{secs}s"
 
 
 def _manifest_path(base_dir, path_value):
@@ -2106,8 +2120,10 @@ class ExportThread(QThread):
 # BATCH PROCESSING THREAD
 # ═══════════════════════════════════════════════════════════════════════════
 class BatchThread(QThread):
-    progress = pyqtSignal(int, int, str)  # current, total, filename
-    finished = pyqtSignal(int, int)       # processed, failed
+    progress = pyqtSignal(int, int, str)             # current, total, filename
+    job_update = pyqtSignal(int, str, int, str, str) # row, status, progress, detail, eta
+    overall_update = pyqtSignal(int, int, str)       # completed, total, eta
+    finished = pyqtSignal(int, int, int)             # processed, failed, skipped
     error = pyqtSignal(str)
 
     def __init__(self, files, output_dir, params, max_faces=1, watermark=False,
@@ -2124,86 +2140,174 @@ class BatchThread(QThread):
         self.jobs = jobs
         self.parser_model = parser_model_key(parser_model)
         self.cancelled = False
+        self._cancelled_jobs = set()
+        self._cancel_lock = threading.Lock()
 
     def cancel(self):
         self.cancelled = True
 
+    def cancel_job(self, index):
+        with self._cancel_lock:
+            self._cancelled_jobs.add(int(index))
+
+    def _job_cancelled(self, index):
+        with self._cancel_lock:
+            return int(index) in self._cancelled_jobs
+
+    def _emit_overall(self, completed, total, started_at):
+        eta = "--"
+        if completed > 0 and completed < total:
+            eta = format_duration(((time.time() - started_at) / completed) * (total - completed))
+        self.overall_update.emit(completed, total, eta)
+
     def run(self):
-        processed = failed = 0
-        os.makedirs(self.output_dir, exist_ok=True)
-        jobs = self.jobs or jobs_from_files(self.files, self.output_dir, self.params,
-                                            self.max_faces, self.watermark,
-                                            self.preserve_metadata, self.compare_mode,
-                                            self.parser_model)
+        processed = failed = skipped = 0
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            jobs = self.jobs or jobs_from_files(self.files, self.output_dir, self.params,
+                                                self.max_faces, self.watermark,
+                                                self.preserve_metadata, self.compare_mode,
+                                                self.parser_model)
+            total = len(jobs)
+            started_at = time.time()
+            self._emit_overall(0, total, started_at)
 
-        for i, job in enumerate(jobs):
-            if self.cancelled: break
-            filepath = job["input"]
-            fname = os.path.basename(filepath)
-            self.progress.emit(i + 1, len(jobs), fname)
-            ext = os.path.splitext(filepath)[1].lower()
+            for i, job in enumerate(jobs):
+                if self.cancelled:
+                    break
+                filepath = job["input"]
+                fname = os.path.basename(filepath)
+                if self._job_cancelled(i):
+                    skipped += 1
+                    self.job_update.emit(i, "Skipped", 100, "Skipped before start", "--")
+                    self._emit_overall(processed + failed + skipped, total, started_at)
+                    continue
 
-            try:
-                if ext in IMAGE_EXTS:
-                    self._process_image(job)
-                    processed += 1
-                elif ext in VIDEO_EXTS:
-                    self._process_video(job)
-                    processed += 1
-                else:
+                self.progress.emit(i + 1, total, fname)
+                self.job_update.emit(i, "Processing", 0, "Starting", "--")
+                ext = os.path.splitext(filepath)[1].lower()
+
+                try:
+                    if ext in IMAGE_EXTS:
+                        ok = self._process_image(job, i)
+                    elif ext in VIDEO_EXTS:
+                        ok = self._process_video(job, i)
+                    else:
+                        ok = False
+                        failed += 1
+                        self.job_update.emit(i, "Failed", 100, "Unsupported file type", "--")
+                    if ext in IMAGE_EXTS | VIDEO_EXTS:
+                        if ok:
+                            processed += 1
+                            self.job_update.emit(i, "Done", 100, "Complete", "0s")
+                        else:
+                            skipped += 1
+                            self.job_update.emit(i, "Skipped", 100, "Cancelled", "--")
+                except Exception as e:
+                    print(f"Batch error {fname}: {e}")
                     failed += 1
-            except Exception as e:
-                print(f"Batch error {fname}: {e}")
-                failed += 1
+                    self.job_update.emit(i, "Failed", 100, str(e), "--")
 
-        self.finished.emit(processed, failed)
+                self._emit_overall(processed + failed + skipped, total, started_at)
 
-    def _process_image(self, job):
+            self.finished.emit(processed, failed, skipped)
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _process_image(self, job, index):
+        if self.cancelled or self._job_cancelled(index):
+            return False
         filepath = job["input"]
         params = job.get("params", self.params)
-        eng = FaceWarpEngine('image', job.get("max_faces", self.max_faces),
-                             job.get("parser_model", self.parser_model))
-        img = cv2.imread(filepath)
-        if img is None: raise ValueError(f"Cannot read {filepath}")
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        result, _ = eng.warp_single_image(rgb, params)
-        result = apply_disclosure_watermark(result, job.get("watermark", self.watermark))
-        out_path = job.get("output") or os.path.join(job.get("output_dir", self.output_dir),
-            os.path.splitext(os.path.basename(filepath))[0] + '_slimmed.png')
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        save_rgb_image(out_path, result, filepath, job.get("preserve_metadata", self.preserve_metadata))
-        eng.close()
+        eng = None
+        try:
+            self.job_update.emit(index, "Processing", 20, "Reading image", "--")
+            eng = FaceWarpEngine('image', job.get("max_faces", self.max_faces),
+                                 job.get("parser_model", self.parser_model))
+            img = cv2.imread(filepath)
+            if img is None:
+                raise ValueError(f"Cannot read {filepath}")
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            self.job_update.emit(index, "Processing", 55, "Processing image", "--")
+            result, _ = eng.warp_single_image(rgb, params)
+            if self.cancelled or self._job_cancelled(index):
+                return False
+            result = apply_disclosure_watermark(result, job.get("watermark", self.watermark))
+            out_path = job.get("output") or os.path.join(job.get("output_dir", self.output_dir),
+                os.path.splitext(os.path.basename(filepath))[0] + '_slimmed.png')
+            out_dir = os.path.dirname(out_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            self.job_update.emit(index, "Processing", 85, "Saving image", "--")
+            save_rgb_image(out_path, result, filepath, job.get("preserve_metadata", self.preserve_metadata))
+            return True
+        finally:
+            if eng is not None:
+                eng.close()
 
-    def _process_video(self, job):
+    def _process_video(self, job, index):
+        if self.cancelled or self._job_cancelled(index):
+            return False
         filepath = job["input"]
         params = job.get("params", self.params)
         max_faces = job.get("max_faces", self.max_faces)
         watermark = job.get("watermark", self.watermark)
         compare_mode = job.get("compare_mode", self.compare_mode)
-        eng = FaceWarpEngine('video', max_faces, job.get("parser_model", self.parser_model))
-        eng.grid_scale = 6
-        cap = cv2.VideoCapture(filepath)
-        if not cap.isOpened(): raise ValueError(f"Cannot open {filepath}")
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        eng = None
+        cap = None
+        writer = None
         out_path = job.get("output") or os.path.join(job.get("output_dir", self.output_dir),
             os.path.splitext(os.path.basename(filepath))[0] + '_slimmed.mp4')
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        out_w, out_h = video_output_size(w, h, compare_mode)
-        writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
-        has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
-        for _ in range(total):
-            if self.cancelled: break
-            ret, frame = cap.read()
-            if not ret: break
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            faces = eng.detect(rgb)
-            proc = eng.warp(rgb, faces, params) if (faces and has_fx) else rgb
-            proc = compose_compare_frame(rgb, proc, compare_mode)
-            proc = apply_disclosure_watermark(proc, watermark)
-            writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
-        cap.release(); writer.release(); eng.close()
+        try:
+            eng = FaceWarpEngine('video', max_faces, job.get("parser_model", self.parser_model))
+            eng.grid_scale = 6
+            cap = cv2.VideoCapture(filepath)
+            if not cap.isOpened():
+                raise ValueError(f"Cannot open {filepath}")
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            out_dir = os.path.dirname(out_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            out_w, out_h = video_output_size(w, h, compare_mode)
+            writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
+            has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
+            total = max(total, 1)
+            started_at = time.time()
+            for frame_idx in range(total):
+                if self.cancelled or self._job_cancelled(index):
+                    return False
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                faces = eng.detect(rgb)
+                proc = eng.warp(rgb, faces, params) if (faces and has_fx) else rgb
+                proc = compose_compare_frame(rgb, proc, compare_mode)
+                proc = apply_disclosure_watermark(proc, watermark)
+                writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
+                pct = int(((frame_idx + 1) / total) * 100)
+                if frame_idx == 0 or frame_idx == total - 1 or frame_idx % max(1, total // 50) == 0:
+                    elapsed = time.time() - started_at
+                    eta = "--"
+                    if frame_idx > 0:
+                        eta = format_duration((elapsed / (frame_idx + 1)) * (total - frame_idx - 1))
+                    self.job_update.emit(index, "Processing", pct,
+                                         f"Frame {frame_idx + 1}/{total}", eta)
+            return True
+        finally:
+            if cap is not None:
+                cap.release()
+            if writer is not None:
+                writer.release()
+            if eng is not None:
+                eng.close()
+            if (self.cancelled or self._job_cancelled(index)) and os.path.exists(out_path):
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2296,6 +2400,79 @@ class Toast(QLabel):
 # ═══════════════════════════════════════════════════════════════════════════
 # DRAGGABLE A/B COMPARE LABEL
 # ═══════════════════════════════════════════════════════════════════════════
+class BatchQueueDialog(QDialog):
+    cancel_job_requested = pyqtSignal(int)
+
+    def __init__(self, jobs, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Queue")
+        self.resize(780, 360)
+        self._progress = []
+        self._status_items = []
+        self._eta_items = []
+        self._buttons = []
+
+        layout = QVBoxLayout(self)
+        self.summary = QLabel(f"Queued: {len(jobs)} files")
+        self.summary.setStyleSheet("color:#a6e3a1; font-size:12px; font-weight:bold;")
+        layout.addWidget(self.summary)
+
+        self.table = QTableWidget(len(jobs), 5)
+        self.table.setHorizontalHeaderLabels(["File", "Status", "Progress", "ETA", "Action"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+
+        for row, job in enumerate(jobs):
+            name = os.path.basename(job.get("input", "")) or str(job.get("input", ""))
+            self.table.setItem(row, 0, QTableWidgetItem(name))
+            status = QTableWidgetItem("Queued")
+            eta = QTableWidgetItem("--")
+            self.table.setItem(row, 1, status)
+            self.table.setItem(row, 3, eta)
+            progress = QProgressBar()
+            progress.setRange(0, 100)
+            progress.setValue(0)
+            progress.setFixedWidth(150)
+            self.table.setCellWidget(row, 2, progress)
+            btn = QPushButton("Cancel")
+            btn.setProperty("danger", True)
+            btn.clicked.connect(lambda _checked=False, idx=row: self._cancel_job(idx))
+            self.table.setCellWidget(row, 4, btn)
+            self._status_items.append(status)
+            self._eta_items.append(eta)
+            self._progress.append(progress)
+            self._buttons.append(btn)
+
+        layout.addWidget(self.table)
+
+    def _cancel_job(self, index):
+        if 0 <= index < len(self._buttons):
+            self._buttons[index].setEnabled(False)
+            self.update_job(index, "Skipped", self._progress[index].value(), "Cancel requested", "--")
+            self.cancel_job_requested.emit(index)
+
+    def update_job(self, index, status, progress, detail, eta):
+        if not (0 <= index < len(self._progress)):
+            return
+        self._status_items[index].setText(status)
+        self._progress[index].setValue(max(0, min(100, int(progress))))
+        self._eta_items[index].setText(eta or "--")
+        if detail and self.table.item(index, 0):
+            self.table.item(index, 0).setToolTip(detail)
+        if status in {"Done", "Failed", "Skipped"}:
+            self._buttons[index].setEnabled(False)
+
+    def update_summary(self, completed, total, eta):
+        self.summary.setText(f"Completed: {completed}/{total} | ETA: {eta}")
+
+
 class CompareVideoLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3055,25 +3232,37 @@ class FaceSlimApp(QMainWindow):
     def _run_batch(self, files, output_dir=None, jobs=None):
         output_dir = output_dir or QFileDialog.getExistingDirectory(self, "Select Output Folder")
         if not output_dir: return
+        batch_jobs = jobs or jobs_from_files(files, output_dir, self._p(), self.spin_faces.value(),
+                                             self.chk_watermark.isChecked(), True,
+                                             self._video_compare_mode(), self._parser_model_key())
         self.batch_prog.setVisible(True); self.batch_prog.setValue(0)
         self.btn_batch.setEnabled(False); self.btn_batch_folder.setEnabled(False); self.btn_batch_manifest.setEnabled(False)
         self.btn_batch_cancel.setEnabled(True)
+        self._batch_dialog = BatchQueueDialog(batch_jobs, self)
+        self._batch_dialog.show()
         self._batch_thread = BatchThread(files, output_dir, self._p(), self.spin_faces.value(),
                                          self.chk_watermark.isChecked(), True,
-                                         self._video_compare_mode(), jobs,
+                                         self._video_compare_mode(), batch_jobs,
                                          self._parser_model_key())
+        self._batch_dialog.cancel_job_requested.connect(self._batch_thread.cancel_job)
         self._batch_thread.progress.connect(lambda c, t, f: (
             self.batch_prog.setValue(int(c / t * 100)),
             self.batch_stat.setText(f"Processing {c}/{t}: {f}")))
-        self._batch_thread.finished.connect(lambda p, f: (
+        self._batch_thread.job_update.connect(self._batch_dialog.update_job)
+        self._batch_thread.overall_update.connect(lambda c, t, eta: (
+            self.batch_prog.setValue(int(c / max(t, 1) * 100)),
+            self.batch_stat.setText(f"Batch {c}/{t} | ETA: {eta}"),
+            self._batch_dialog.update_summary(c, t, eta)))
+        self._batch_thread.finished.connect(lambda p, f, s: (
             self.btn_batch.setEnabled(True), self.btn_batch_folder.setEnabled(True),
             self.btn_batch_manifest.setEnabled(True),
             self.btn_batch_cancel.setEnabled(False),
-            self.batch_stat.setText(f"Done: {p} processed, {f} failed"),
+            self.batch_stat.setText(f"Done: {p} processed, {f} failed, {s} skipped"),
             self.toast.show_message(f"Batch complete: {p} files")))
         self._batch_thread.error.connect(lambda m: (
             self.btn_batch.setEnabled(True), self.btn_batch_folder.setEnabled(True),
             self.btn_batch_manifest.setEnabled(True),
+            self.btn_batch_cancel.setEnabled(False),
             self.batch_stat.setText(f"Error: {m}")))
         self._batch_thread.start()
 

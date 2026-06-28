@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.9.0-blue)
+![Version](https://img.shields.io/badge/version-1.10.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -68,6 +68,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | A/B Compare | Draggable split-screen before/after overlay |
 | Batch Processing | Folder/multi-file image and video processing |
 | Batch Manifest | JSON jobs with per-file preset, face overrides, output, watermark, and compare settings |
+| Batch Queue Dialog | Per-file status, progress, ETA, and single-job cancellation |
 | CLI Mode | Headless with presets and per-param control |
 | Metadata Preservation | Image exports preserve EXIF/ICC metadata by default |
 | Disclosure Watermark | Optional exported media badge declaring AI modification |
@@ -131,6 +132,9 @@ python FaceSlim_v1.py --input video.mp4 --jaw 50 --eye-enlarge 30 --lip-plump 20
 
 # Batch folder processing
 python FaceSlim_v1.py --input ./photos/ --output ./results/ --preset Strong
+
+# GUI batch processing
+# Export tab -> Select Files for Batch / Process Entire Folder / Run Manifest opens the queue dialog
 
 # Multi-face processing
 python FaceSlim_v1.py --input group.jpg --faces 3 --preset "Full Sculpt"
