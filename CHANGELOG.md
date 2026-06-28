@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.11.0 - 2026-06-28
+
+- Added a per-second video timeline scrubber for file playback.
+- Added seek handling that reprocesses the selected frame with the current slider state.
+
 ## FaceSlim v1.10.0 - 2026-06-28
 
 - Added a batch queue dialog with per-file status, progress, ETA, and single-job cancellation.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.10.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.11.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -88,7 +88,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -960,6 +960,17 @@ def format_duration(seconds):
     if mins:
         return f"{mins}m {secs}s"
     return f"{secs}s"
+
+
+def format_timecode(seconds):
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return "--:--"
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{mins:02d}:{secs:02d}"
+    return f"{mins}:{secs:02d}"
 
 
 def _manifest_path(base_dir, path_value):
@@ -1949,6 +1960,7 @@ class ParamHistory:
 class VideoThread(QThread):
     frame_ready = pyqtSignal(np.ndarray, np.ndarray, list, object)  # orig, proc, faces, teeth_hint_rois
     fps_update = pyqtSignal(float)
+    timeline_update = pyqtSignal(float, float)  # current seconds, duration seconds
     status_update = pyqtSignal(str)
     error_update = pyqtSignal(str)
 
@@ -1961,9 +1973,20 @@ class VideoThread(QThread):
         self.max_faces = 1
         self.parser_model = DEFAULT_PARSER_MODEL
         self.preview_scale = 1.0  # 1.0 = full res, 0.5 = half
+        self._seek_seconds = None
+        self._seek_lock = threading.Lock()
 
     def set_source(self, s): self.source = s
     def update_params(self, p): self.params = p.copy()
+    def request_seek(self, seconds):
+        with self._seek_lock:
+            self._seek_seconds = max(0.0, float(seconds))
+
+    def _take_seek(self):
+        with self._seek_lock:
+            seconds = self._seek_seconds
+            self._seek_seconds = None
+            return seconds
 
     def run(self):
         eng = None
@@ -1980,9 +2003,21 @@ class VideoThread(QThread):
                 self.status_update.emit("Failed to open video source")
                 return
 
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            duration = (frame_count / fps) if (self.source is not None and frame_count > 0 and fps > 0) else 0.0
+            self.timeline_update.emit(0.0, duration)
             fps_t = deque(maxlen=30)
             while self.running:
-                if self.paused: self.msleep(50); continue
+                seek_to = self._take_seek()
+                if seek_to is not None and self.source is not None:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, seek_to * 1000.0)
+                    if eng is not None:
+                        eng.close()
+                    eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
+                    eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
+                if self.paused and seek_to is None:
+                    self.msleep(50); continue
                 t0 = time.time()
                 ret, frame = cap.read()
                 if not ret:
@@ -1990,10 +2025,17 @@ class VideoThread(QThread):
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         eng.close(); eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
                         eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
+                        self.timeline_update.emit(0.0, duration)
                         continue
                     break
 
                 try:
+                    if self.source is not None:
+                        pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+                        pos_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                        current_sec = (pos_msec / 1000.0) if pos_msec > 0 else (pos_frame / fps if fps > 0 else 0.0)
+                        self.timeline_update.emit(current_sec, duration)
+
                     # Preview scaling
                     if self.preview_scale < 1.0:
                         h, w = frame.shape[:2]
@@ -2574,6 +2616,8 @@ class FaceSlimApp(QMainWindow):
         self.current_processed = None
         self.current_faces = []
         self.current_teeth_hint_rois = []
+        self._timeline_dragging = False
+        self._timeline_duration = 0.0
         self.history = ParamHistory()
         self.image_mode = False  # True when viewing a single image
         self._image_engine = None  # Cached engine for image mode
@@ -2632,6 +2676,22 @@ class FaceSlimApp(QMainWindow):
             "color:#6c7086; font-size:14px;")
         self.video_label.setText("Drop a file here, or use the buttons below to start")
         left.addWidget(self.video_label, 1)
+
+        timeline_row = QHBoxLayout(); timeline_row.setSpacing(8)
+        timeline_title = QLabel("Timeline")
+        timeline_title.setStyleSheet("color:#89b4fa; font-size:11px; font-weight:bold;")
+        timeline_row.addWidget(timeline_title)
+        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
+        self.timeline_slider.setRange(0, 0)
+        self.timeline_slider.setEnabled(False)
+        self.timeline_slider.sliderPressed.connect(self._timeline_pressed)
+        self.timeline_slider.sliderMoved.connect(self._timeline_seek)
+        self.timeline_slider.sliderReleased.connect(self._timeline_released)
+        timeline_row.addWidget(self.timeline_slider, 1)
+        self.timeline_label = QLabel("--:-- / --:--")
+        self.timeline_label.setStyleSheet("color:#cdd6f4; font-size:11px; min-width:86px;")
+        timeline_row.addWidget(self.timeline_label)
+        left.addLayout(timeline_row)
 
         # Toast overlay
         self.toast = Toast(self.video_label)
@@ -2920,6 +2980,49 @@ class FaceSlimApp(QMainWindow):
         if self.video_thread:
             self.video_thread.preview_scale = scales[idx]
 
+    def _reset_timeline(self):
+        self._timeline_duration = 0.0
+        self._timeline_dragging = False
+        self.timeline_slider.blockSignals(True)
+        self.timeline_slider.setRange(0, 0)
+        self.timeline_slider.setValue(0)
+        self.timeline_slider.setEnabled(False)
+        self.timeline_slider.blockSignals(False)
+        self.timeline_label.setText("--:-- / --:--")
+
+    def _timeline_pressed(self):
+        self._timeline_dragging = True
+
+    def _timeline_seek(self, value):
+        self.timeline_label.setText(
+            f"{format_timecode(value)} / {format_timecode(self._timeline_duration)}")
+        if self.video_thread and self.video_thread.source is not None:
+            self.video_thread.request_seek(value)
+
+    def _timeline_released(self):
+        self._timeline_dragging = False
+        self._timeline_seek(self.timeline_slider.value())
+
+    def _on_timeline(self, current_sec, duration_sec):
+        self._timeline_duration = max(0.0, float(duration_sec or 0.0))
+        if self._timeline_duration <= 0:
+            if not self._timeline_dragging:
+                self.timeline_slider.setEnabled(False)
+                self.timeline_slider.setRange(0, 0)
+                self.timeline_label.setText("--:-- / --:--")
+            return
+        max_seconds = max(1, int(math.ceil(self._timeline_duration)))
+        if self.timeline_slider.maximum() != max_seconds:
+            self.timeline_slider.setRange(0, max_seconds)
+        self.timeline_slider.setEnabled(True)
+        current_value = max(0, min(max_seconds, int(round(current_sec))))
+        if not self._timeline_dragging:
+            self.timeline_slider.blockSignals(True)
+            self.timeline_slider.setValue(current_value)
+            self.timeline_slider.blockSignals(False)
+        self.timeline_label.setText(
+            f"{format_timecode(current_value)} / {format_timecode(self._timeline_duration)}")
+
     def _video_compare_mode(self):
         return ['none', 'split', 'side_by_side'][self.combo_video_compare.currentIndex()]
 
@@ -3025,6 +3128,7 @@ class FaceSlimApp(QMainWindow):
         img = cv2.imread(path)
         if img is None: return
         self.current_original = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        self._reset_timeline()
         # Reset cached engine so filter state doesn't bleed between images
         if self._image_engine is not None:
             self._image_engine.close()
@@ -3059,6 +3163,7 @@ class FaceSlimApp(QMainWindow):
 
     def _go(self, src):
         self.stop_video()
+        self._reset_timeline()
         self.video_thread = VideoThread()
         self.video_thread.set_source(src)
         self.video_thread.update_params(self._p())
@@ -3071,6 +3176,7 @@ class FaceSlimApp(QMainWindow):
         self.video_thread.preview_scale = scales[self.combo_scale.currentIndex()]
         self.video_thread.frame_ready.connect(self._on_frame)
         self.video_thread.fps_update.connect(self._on_fps)
+        self.video_thread.timeline_update.connect(self._on_timeline)
         self.video_thread.status_update.connect(self.statusBar().showMessage)
         self.video_thread.error_update.connect(self._on_video_error)
         self.video_thread.start()
@@ -3081,6 +3187,7 @@ class FaceSlimApp(QMainWindow):
     def stop_video(self):
         if self.video_thread and self.video_thread.isRunning():
             self.video_thread.stop(); self.video_thread = None
+        self._reset_timeline()
         self.btn_stop.setEnabled(False); self.fps_label.setText("-- FPS")
 
     # ── Frame Display ───────────────────────────────────────────

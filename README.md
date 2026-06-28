@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.10.0-blue)
+![Version](https://img.shields.io/badge/version-1.11.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -65,6 +65,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Multi-Face Support | Up to 5 simultaneous faces with per-face caching |
 | Per-Face Overrides | CLI/manifest can apply different presets or values per face index |
 | Real-Time Preview | Webcam/video with live slider adjustment |
+| Video Timeline Scrubber | Per-second seeking with current slider-state preview |
 | A/B Compare | Draggable split-screen before/after overlay |
 | Batch Processing | Folder/multi-file image and video processing |
 | Batch Manifest | JSON jobs with per-file preset, face overrides, output, watermark, and compare settings |
@@ -113,7 +114,7 @@ Video Mode Only:
 python FaceSlim_v1.py
 ```
 
-The interface has three tabs: **Reshape** (sliders for all effects plus preview overlays), **Presets** (built-in/custom preset management), and **Export** (video export, screenshots, batch, GIF).
+The interface has three tabs: **Reshape** (sliders for all effects plus preview overlays), **Presets** (built-in/custom preset management), and **Export** (video export, screenshots, batch, GIF). File videos expose a per-second timeline scrubber under the preview.
 
 ### CLI Mode
 
