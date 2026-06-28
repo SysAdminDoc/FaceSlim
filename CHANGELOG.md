@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.12.0 - 2026-06-28
+
+- Added a first-launch responsible-use gate for consent, disclosure, and platform-rule expectations.
+- Persisted the acknowledgement in Qt settings while leaving CLI mode unchanged.
+
 ## FaceSlim v1.11.0 - 2026-06-28
 
 - Added a per-second video timeline scrubber for file playback.

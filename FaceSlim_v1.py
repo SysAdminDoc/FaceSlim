@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.11.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.12.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -88,7 +88,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -2442,6 +2442,37 @@ class Toast(QLabel):
 # ═══════════════════════════════════════════════════════════════════════════
 # DRAGGABLE A/B COMPARE LABEL
 # ═══════════════════════════════════════════════════════════════════════════
+class ResponsibleUseDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Responsible Use")
+        self.setModal(True)
+        self.setFixedWidth(520)
+        layout = QVBoxLayout(self)
+        title = QLabel("Responsible Use")
+        title.setStyleSheet("font-size:18px; font-weight:bold; color:#89b4fa;")
+        layout.addWidget(title)
+        body = QLabel(
+            "Use FaceSlim only on media you own or have permission to edit. "
+            "Do not misrepresent identity, consent, or material appearance changes. "
+            "Disclose altered media when context, platform rules, or local law requires it."
+        )
+        body.setWordWrap(True)
+        body.setStyleSheet("color:#cdd6f4; font-size:13px; line-height:1.35;")
+        layout.addWidget(body)
+        row = QHBoxLayout()
+        row.addStretch()
+        btn_exit = QPushButton("Exit")
+        btn_exit.setProperty("secondary", True)
+        btn_exit.clicked.connect(self.reject)
+        row.addWidget(btn_exit)
+        btn_accept = QPushButton("I Understand")
+        btn_accept.setProperty("success", True)
+        btn_accept.clicked.connect(self.accept)
+        row.addWidget(btn_accept)
+        layout.addLayout(row)
+
+
 class BatchQueueDialog(QDialog):
     cancel_job_requested = pyqtSignal(int)
 
@@ -2603,7 +2634,7 @@ QFrame#separator { background-color: #45475a; max-height: 1px; }
 # MAIN WINDOW
 # ═══════════════════════════════════════════════════════════════════════════
 class FaceSlimApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, show_responsible_gate=True):
         super().__init__()
         self.setWindowTitle(f"FaceSlim v{VERSION}")
         self.setMinimumSize(1150, 720); self.resize(1360, 800)
@@ -2626,6 +2657,8 @@ class FaceSlimApp(QMainWindow):
         self._build_ui()
         self._load_settings()
         self.history.push(self._p())
+        if show_responsible_gate:
+            QTimer.singleShot(0, self._show_responsible_use_gate)
 
     # ── Slider Factory ──────────────────────────────────────────
     def _make_slider(self, layout, key, label, max_v=100, default=0, tip=""):
@@ -2646,6 +2679,16 @@ class FaceSlimApp(QMainWindow):
         self._push()
         if self.image_mode:
             self._process_current_image()
+
+    def _show_responsible_use_gate(self):
+        if self.settings.value("responsible_use_ack_v1", False, type=bool):
+            return
+        dlg = ResponsibleUseDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            self.settings.setValue("responsible_use_ack_v1", True)
+            self.toast.show_message("Responsible use acknowledged")
+        else:
+            self.close()
 
     # ── Build UI ────────────────────────────────────────────────
     def _build_ui(self):

@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.11.0-blue)
+![Version](https://img.shields.io/badge/version-1.12.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -73,6 +73,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | CLI Mode | Headless with presets and per-param control |
 | Metadata Preservation | Image exports preserve EXIF/ICC metadata by default |
 | Disclosure Watermark | Optional exported media badge declaring AI modification |
+| Responsible-Use Gate | First-launch acknowledgement for consent, disclosure, and platform-rule expectations |
 | Preset System | 9 built-in + unlimited custom presets (JSON) |
 | Before/After GIF | One-click animated comparison export |
 | Drag & Drop | Drop images/videos directly onto the window |
@@ -252,6 +253,7 @@ Custom presets are stored as JSON in:
 | macOS/Linux | `~/.faceslim/presets/` |
 
 Slider values persist between sessions via Qt settings. Crash logs are written to `crash.log` in the application directory.
+The first GUI launch shows a responsible-use acknowledgement and stores it in Qt settings after acceptance.
 
 ## Models (Auto-Downloaded)
 
