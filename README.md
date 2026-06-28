@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.7.0-blue)
+![Version](https://img.shields.io/badge/version-1.8.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -34,6 +34,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Nose Slim | Narrows the nose bridge and tip | Horizontal-only warp toward nose centerline |
 | Eye Enlarge | Enlarges eyes from iris center | Radial outward push on eye contour |
 | Lip Plump | Plumps lips outward | Directional push (upper=up, lower=down) + radial |
+| Expression Neutralize | Softens frowns and raised/lowered brows | MediaPipe blendshape-guided local warp |
 
 ### AI Beauty (BiSeNet Parsing-Based)
 
@@ -148,6 +149,9 @@ python FaceSlim_v1.py --input photo.jpg --parser-model bisenet_resnet34 --skin-s
 # Cleaner face/background boundary on strong warps
 python FaceSlim_v1.py --input photo.jpg --jaw 45 --matting-refine 70
 
+# Blendshape-guided expression softening
+python FaceSlim_v1.py --input photo.jpg --expression-neutralize 65
+
 # List available presets
 python FaceSlim_v1.py --list-presets
 ```
@@ -167,6 +171,7 @@ python FaceSlim_v1.py --list-presets
 | `--nose` | 0-100 | Nose slimming |
 | `--eye-enlarge` | 0-100 | Eye enlargement |
 | `--lip-plump` | 0-100 | Lip plumping |
+| `--expression-neutralize` | 0-100 | Blendshape-guided frown and brow dampening |
 | `--skin-smooth` | 0-100 | AI skin smoothing |
 | `--skin-tone-even` | 0-100 | AI skin tone evening |
 | `--teeth-whiten` | 0-100 | AI teeth whitening |

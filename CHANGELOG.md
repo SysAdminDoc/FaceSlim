@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.8.0 - 2026-06-28
+
+- Added expression neutralization with MediaPipe blendshape scores to soften frowns and raised/lowered brows.
+- Added GUI and CLI controls for `expression_neutralize`.
+
 ## FaceSlim v1.7.0 - 2026-06-27
 
 - Added optional MODNet ONNX matting refinement for ROI warp masks.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.7.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.8.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -87,7 +87,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -320,13 +320,15 @@ DEFAULT_PARAMS = {'jaw': 0, 'cheeks': 0, 'chin': 0, 'face_width': 0,
                   'skin_tone_even': 0, 'lip_color': 0, 'under_eye': 0,
                   'hair_hue': 0, 'hair_saturation': 0, 'hair_density': 0,
                   'blush': 0, 'lip_gloss': 0, 'eye_shadow': 0,
+                  'expression_neutralize': 0,
                   'matting_refine': 0}
 
 EFFECT_PARAM_KEYS = (
     'jaw', 'cheeks', 'chin', 'face_width', 'forehead', 'nose', 'eye_enlarge',
     'lip_plump', 'skin_smooth', 'teeth_whiten', 'eye_sharpen',
     'skin_tone_even', 'lip_color', 'under_eye', 'hair_hue',
-    'hair_saturation', 'hair_density', 'blush', 'lip_gloss', 'eye_shadow'
+    'hair_saturation', 'hair_density', 'blush', 'lip_gloss', 'eye_shadow',
+    'expression_neutralize'
 )
 
 CLI_PARAM_KEYS = EFFECT_PARAM_KEYS + ('smoothing', 'temporal', 'bg_protect', 'matting_refine')
@@ -500,6 +502,18 @@ class MattingRefinementEngine:
                 oldest = next(iter(self._cache))
                 del self._cache[oldest]
         return matte
+
+
+def face_components(face):
+    if len(face) >= 3:
+        return face[0], face[1], face[2] or {}
+    return face[0], face[1], {}
+
+
+def blend_score(blendshapes, *names):
+    if not blendshapes:
+        return 0.0
+    return max((float(blendshapes.get(name, 0.0)) for name in names), default=0.0)
 
 
 def apply_skin_smoothing(frame, skin_mask, strength):
@@ -1061,7 +1075,7 @@ class FaceWarpEngine:
             min_face_detection_confidence=0.5,
             min_face_presence_confidence=0.5,
             min_tracking_confidence=0.5,
-            output_face_blendshapes=False,
+            output_face_blendshapes=True,
             output_facial_transformation_matrixes=False,
         )
         self.landmarker = vision.FaceLandmarker.create_from_options(opts)
@@ -1092,7 +1106,7 @@ class FaceWarpEngine:
             f.set_beta(beta)
 
     def detect(self, frame_rgb):
-        """Returns list of (landmarks, confidence) tuples for each detected face."""
+        """Returns list of (landmarks, confidence, blendshape_scores) tuples."""
         mpi = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         if self.mode == 'video':
             self.ts += 33
@@ -1103,6 +1117,7 @@ class FaceWarpEngine:
             return []
         h, w = frame_rgb.shape[:2]
         faces = []
+        blendshape_results = getattr(res, 'face_blendshapes', None) or []
         for i, face_lms in enumerate(res.face_landmarks):
             pts = np.array([(lm.x * w, lm.y * h) for lm in face_lms], dtype=np.float64)
             # Compute confidence from visibility (presence can be None in some MediaPipe versions)
@@ -1113,10 +1128,16 @@ class FaceWarpEngine:
                 conf = 0.9
             if i < len(self.lm_filters):
                 pts = self.lm_filters[i](pts, time.time())
-            faces.append((pts, float(conf)))
+            blendshapes = {}
+            if i < len(blendshape_results):
+                for category in blendshape_results[i]:
+                    name = getattr(category, 'category_name', None)
+                    if name:
+                        blendshapes[name] = float(getattr(category, 'score', 0.0))
+            faces.append((pts, float(conf), blendshapes))
         return faces
 
-    def _compute_control_points(self, lms, params, h, w):
+    def _compute_control_points(self, lms, params, h, w, blendshapes=None):
         center = np.mean(lms[[i for i in FACE_CENTER if i < len(lms)]], axis=0)
         src, tgt = [], []
         jaw_s     = params.get('jaw', 0) / 100.0
@@ -1125,6 +1146,7 @@ class FaceWarpEngine:
         width_s   = params.get('face_width', 0) / 100.0
         forehead_s = params.get('forehead', 0) / 100.0
         nose_s    = params.get('nose', 0) / 100.0
+        neutral_s = params.get('expression_neutralize', 0) / 100.0
 
         def shift(indices, strength, vbias=0.0):
             for idx in indices:
@@ -1162,6 +1184,31 @@ class FaceWarpEngine:
             nose_sides = [48, 64, 98, 327, 278, 294,
                           129, 358, 236, 456, 198, 420, 131, 360]
             shift_horizontal(nose_sides, nose_s)
+
+        if neutral_s > 0.01 and blendshapes:
+            face_h = max(24.0, float(np.ptp(lms[:min(468, len(lms)), 1])))
+
+            def expression_shift(indices, dy):
+                if abs(dy) < 0.1:
+                    return
+                for idx in indices:
+                    if idx < len(lms):
+                        pt = lms[idx]
+                        src.append(pt.copy())
+                        tgt.append(pt + np.array([0.0, dy], dtype=np.float64))
+
+            left_brow_down = blend_score(blendshapes, 'browDownLeft')
+            right_brow_down = blend_score(blendshapes, 'browDownRight')
+            brow_inner_up = blend_score(blendshapes, 'browInnerUp')
+            left_brow_up = max(brow_inner_up, blend_score(blendshapes, 'browOuterUpLeft'))
+            right_brow_up = max(brow_inner_up, blend_score(blendshapes, 'browOuterUpRight'))
+            expression_shift(LEFT_EYE_BROW, neutral_s * face_h * (left_brow_up * 0.025 - left_brow_down * 0.030))
+            expression_shift(RIGHT_EYE_BROW, neutral_s * face_h * (right_brow_up * 0.025 - right_brow_down * 0.030))
+
+            left_frown = blend_score(blendshapes, 'mouthFrownLeft')
+            right_frown = blend_score(blendshapes, 'mouthFrownRight')
+            expression_shift([61, 146, 91, 181], -neutral_s * face_h * left_frown * 0.030)
+            expression_shift([291, 375, 321, 405], -neutral_s * face_h * right_frown * 0.030)
 
         # Eye enlargement: push eye contour outward from eye center
         eye_s = params.get('eye_enlarge', 0) / 100.0
@@ -1451,10 +1498,11 @@ class FaceWarpEngine:
 
         # ── Optical flow: decide keyframe at frame level (not per-face) ──
         has_any_warp = False
-        for i, (lms, conf) in enumerate(faces):
+        for i, face in enumerate(faces):
+            lms, conf, blendshapes = face_components(face)
             fp = self._params_for_face(params, i)
             h, w = result.shape[:2]
-            src, tgt = self._compute_control_points(lms, fp, h, w)
+            src, tgt = self._compute_control_points(lms, fp, h, w, blendshapes)
             if len(src) >= 4 and np.max(np.linalg.norm(tgt - src, axis=1)) >= 0.5:
                 has_any_warp = True
                 break
@@ -1470,7 +1518,8 @@ class FaceWarpEngine:
 
         pre_warp = result.copy() if (has_any_warp and not use_flow_this_frame and self.flow_prop is not None) else None
 
-        for i, (lms, conf) in enumerate(faces):
+        for i, face in enumerate(faces):
+            lms, conf, blendshapes = face_components(face)
             fp = self._params_for_face(params, i)
             h, w = result.shape[:2]
             cache = self._caches[min(i, len(self._caches)-1)]
@@ -1482,7 +1531,7 @@ class FaceWarpEngine:
                 cache.pop(_ck, None)
 
             # Compute warp control points
-            src, tgt = self._compute_control_points(lms, fp, h, w)
+            src, tgt = self._compute_control_points(lms, fp, h, w, blendshapes)
             has_warp = len(src) >= 4 and np.max(np.linalg.norm(tgt - src, axis=1)) >= 0.5
 
             # Apply geometric warp if needed (full TPS on keyframes)
@@ -2135,7 +2184,8 @@ class GifExportThread(QThread):
 # ═══════════════════════════════════════════════════════════════════════════
 def draw_landmarks(frame, faces, show_confidence=False, show_landmarks=True):
     ov = frame.copy()
-    for face_idx, (lms, conf) in enumerate(faces):
+    for face_idx, face in enumerate(faces):
+        lms, conf, _blendshapes = face_components(face)
         if show_landmarks:
             for group, col in [(LEFT_JAW,(166,227,161)),(RIGHT_JAW,(166,227,161)),
                                 (LEFT_CHEEK,(249,226,175)),(RIGHT_CHEEK,(249,226,175)),
@@ -2392,6 +2442,8 @@ class FaceSlimApp(QMainWindow):
         self._make_slider(g1l, 'nose', 'Nose Slim', tip='Narrows the nose bridge and tip')
         self._make_slider(g1l, 'eye_enlarge', 'Eye Enlarge', tip='Enlarges eyes outward from iris center')
         self._make_slider(g1l, 'lip_plump', 'Lip Plump', tip='Plumps lips outward from lip center')
+        self._make_slider(g1l, 'expression_neutralize', 'Expression Neutralize', default=0,
+                          tip='Blendshape-guided dampening of frowns and raised or lowered brows')
         t1.addWidget(g1)
 
         g_beauty = QGroupBox("AI Beauty"); g_bl = QVBoxLayout(g_beauty); g_bl.setSpacing(6)
@@ -3125,6 +3177,8 @@ Examples:
     parser.add_argument('--nose', type=int, help='Nose slimming (0-100)')
     parser.add_argument('--eye-enlarge', type=int, dest='eye_enlarge', help='Eye enlargement (0-100)')
     parser.add_argument('--lip-plump', type=int, dest='lip_plump', help='Lip plumping (0-100)')
+    parser.add_argument('--expression-neutralize', type=int, dest='expression_neutralize',
+                        help='Blendshape-guided frown and brow dampening (0-100)')
     parser.add_argument('--skin-smooth', type=int, dest='skin_smooth', help='AI skin smoothing (0-100)')
     parser.add_argument('--teeth-whiten', type=int, dest='teeth_whiten', help='AI teeth whitening (0-100)')
     parser.add_argument('--eye-sharpen', type=int, dest='eye_sharpen', help='AI eye sharpening (0-100)')
