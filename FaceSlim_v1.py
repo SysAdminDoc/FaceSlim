@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.17.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.18.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -19,6 +19,7 @@ multiprocessing.freeze_support()
 import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob, threading, hashlib
 from collections import deque
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AUTO-BOOTSTRAP
@@ -95,9 +96,10 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.17.0"
+VERSION = "1.18.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RENDER_LOG_PATH = os.path.join(APP_DIR, 'render.log')
+IPTC_DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced"
 CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), '.faceslim')
 PRESETS_DIR = os.path.join(CONFIG_DIR, 'presets')
 os.makedirs(PRESETS_DIR, exist_ok=True)
@@ -910,7 +912,117 @@ def video_output_size(width, height, mode):
     return width, height
 
 
-def save_rgb_image(output_path, rgb, source_path=None, preserve_metadata=True):
+def _provenance_context(source_path=None, preserve_metadata=True, watermark=False):
+    return {
+        "tool": f"FaceSlim v{VERSION}",
+        "edited_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source_file": os.path.basename(source_path) if source_path else "",
+        "source_metadata_preserved": bool(preserve_metadata),
+        "disclosure_watermark": bool(watermark),
+        "digital_source_type": IPTC_DIGITAL_SOURCE_TYPE,
+        "description": "AI modified by FaceSlim face reshaping and retouch pipeline.",
+    }
+
+
+def _provenance_description(ctx):
+    watermark = "yes" if ctx["disclosure_watermark"] else "no"
+    preserved = "yes" if ctx["source_metadata_preserved"] else "no"
+    return (
+        f"{ctx['description']} Tool: {ctx['tool']}; edited: {ctx['edited_at']}; "
+        f"visual watermark: {watermark}; source metadata preserved: {preserved}."
+    )
+
+
+def build_provenance_xmp(source_path=None, preserve_metadata=True, watermark=False):
+    ctx = _provenance_context(source_path, preserve_metadata, watermark)
+    desc = _provenance_description(ctx)
+    attrs = {
+        "xmp:CreatorTool": ctx["tool"],
+        "photoshop:Instructions": desc,
+        "Iptc4xmpExt:DigitalSourceType": ctx["digital_source_type"],
+        "faceslim:Version": VERSION,
+        "faceslim:EditedAt": ctx["edited_at"],
+        "faceslim:SourceFile": ctx["source_file"],
+        "faceslim:SourceMetadataPreserved": str(ctx["source_metadata_preserved"]).lower(),
+        "faceslim:DisclosureWatermark": str(ctx["disclosure_watermark"]).lower(),
+    }
+    attr_text = "\n   ".join(f'{key}="{xml_escape(str(value))}"' for key, value in attrs.items())
+    return f'''<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+   xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+   xmlns:dc="http://purl.org/dc/elements/1.1/"
+   xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+   xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+   xmlns:faceslim="https://github.com/SysAdminDoc/FaceSlim/ns/1.0/"
+   {attr_text}>
+   <dc:description>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">{xml_escape(desc)}</rdf:li>
+    </rdf:Alt>
+   </dc:description>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>'''.encode("utf-8")
+
+
+def _apply_exif_provenance(save_kwargs, source_exif, source_path=None,
+                           preserve_metadata=True, watermark=False):
+    exif = source_exif if source_exif is not None else PILImage.Exif()
+    ctx = _provenance_context(source_path, preserve_metadata, watermark)
+    desc = _provenance_description(ctx)
+    exif[270] = desc  # ImageDescription
+    exif[305] = ctx["tool"]  # Software
+    exif[37510] = b"ASCII\0\0\0" + desc.encode("ascii", errors="replace")  # UserComment
+    save_kwargs["exif"] = exif.tobytes()
+
+
+def _jpeg_without_existing_xmp(data):
+    xmp_header = b"http://ns.adobe.com/xap/1.0/\x00"
+    if not data.startswith(b"\xff\xd8"):
+        return data
+    out = bytearray(data[:2])
+    i = 2
+    while i < len(data):
+        if data[i:i + 1] != b"\xff" or i + 4 > len(data):
+            out.extend(data[i:])
+            break
+        marker = data[i:i + 2]
+        if marker == b"\xff\xda":
+            out.extend(data[i:])
+            break
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        end = i + 2 + length
+        if end > len(data):
+            out.extend(data[i:])
+            break
+        payload = data[i + 4:end]
+        if marker == b"\xff\xe1" and payload.startswith(xmp_header):
+            i = end
+            continue
+        out.extend(data[i:end])
+        i = end
+    return bytes(out)
+
+
+def _write_jpeg_xmp(path, xmp_bytes):
+    xmp_header = b"http://ns.adobe.com/xap/1.0/\x00"
+    payload = xmp_header + xmp_bytes
+    if len(payload) + 2 > 65535:
+        return
+    with open(path, "rb") as f:
+        data = f.read()
+    data = _jpeg_without_existing_xmp(data)
+    if not data.startswith(b"\xff\xd8"):
+        return
+    segment = b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+    with open(path, "wb") as f:
+        f.write(data[:2] + segment + data[2:])
+
+
+def save_rgb_image(output_path, rgb, source_path=None, preserve_metadata=True, watermark=False):
     ext = os.path.splitext(output_path)[1].lower()
     if not ext:
         output_path += ".png"
@@ -918,11 +1030,11 @@ def save_rgb_image(output_path, rgb, source_path=None, preserve_metadata=True):
     image = PILImage.fromarray(rgb)
     save_kwargs = {}
     png_info = None
+    source_exif = None
     if preserve_metadata and source_path and os.path.exists(source_path):
         try:
             with PILImage.open(source_path) as src:
-                if src.info.get("exif"):
-                    save_kwargs["exif"] = src.info["exif"]
+                source_exif = src.getexif()
                 if src.info.get("icc_profile"):
                     save_kwargs["icc_profile"] = src.info["icc_profile"]
                 if ext == ".png":
@@ -932,12 +1044,27 @@ def save_rgb_image(output_path, rgb, source_path=None, preserve_metadata=True):
                             png_info.add_text(key, value)
         except Exception as e:
             print(f"Metadata preserve warning: {e}")
+    xmp = build_provenance_xmp(source_path, preserve_metadata, watermark)
+    if ext == ".png":
+        if png_info is None:
+            png_info = PngImagePlugin.PngInfo()
+        ctx = _provenance_context(source_path, preserve_metadata, watermark)
+        png_info.add_text("XML:com.adobe.xmp", xmp.decode("utf-8"))
+        png_info.add_text("Software", ctx["tool"])
+        png_info.add_text("Description", _provenance_description(ctx))
+        png_info.add_text("IPTC:DigitalSourceType", ctx["digital_source_type"])
+        png_info.add_text("FaceSlim:SourceMetadataPreserved", str(ctx["source_metadata_preserved"]).lower())
+        png_info.add_text("FaceSlim:DisclosureWatermark", str(ctx["disclosure_watermark"]).lower())
+    if ext in (".jpg", ".jpeg", ".tif", ".tiff", ".webp"):
+        _apply_exif_provenance(save_kwargs, source_exif, source_path, preserve_metadata, watermark)
     if png_info is not None:
         save_kwargs["pnginfo"] = png_info
     if ext in (".jpg", ".jpeg"):
         save_kwargs.setdefault("quality", 95)
         save_kwargs.setdefault("subsampling", 1)
     image.save(output_path, **save_kwargs)
+    if ext in (".jpg", ".jpeg"):
+        _write_jpeg_xmp(output_path, xmp)
     return output_path
 
 
@@ -2439,7 +2566,8 @@ class BatchThread(QThread):
             if out_dir:
                 os.makedirs(out_dir, exist_ok=True)
             self.job_update.emit(index, "Processing", 85, "Saving image", "--")
-            save_rgb_image(out_path, result, filepath, job.get("preserve_metadata", self.preserve_metadata))
+            save_rgb_image(out_path, result, filepath, job.get("preserve_metadata", self.preserve_metadata),
+                           job.get("watermark", self.watermark))
             return True
         finally:
             if eng is not None:
@@ -3520,7 +3648,7 @@ class FaceSlimApp(QMainWindow):
         out, _ = QFileDialog.getSaveFileName(self, "Save Screenshot", default, "PNG (*.png);;JPEG (*.jpg)")
         if out:
             result = apply_disclosure_watermark(self.current_processed, self.chk_watermark.isChecked())
-            save_rgb_image(out, result, self.source_path, True)
+            save_rgb_image(out, result, self.source_path, True, self.chk_watermark.isChecked())
             self.toast.show_message(f"Screenshot saved")
 
     # ── Export: GIF ─────────────────────────────────────────────
@@ -3722,7 +3850,7 @@ def cli_process(args):
                 out_path = job.get("output") or os.path.join(job.get("output_dir", output_dir),
                     os.path.splitext(fname)[0] + '_slimmed.png')
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                save_rgb_image(out_path, result, filepath, preserve_metadata)
+                save_rgb_image(out_path, result, filepath, preserve_metadata, watermark)
                 eng.close(); eng = None
                 print(f"OK ({len(faces)} face{'s' if len(faces) != 1 else ''})")
                 processed += 1
@@ -3844,7 +3972,7 @@ Examples:
                         help='Override one parameter for a face, e.g. 1:jaw=35')
     parser.add_argument('--manifest', help='JSON batch manifest with per-file/per-face settings')
     parser.add_argument('--watermark', action='store_true', help='Add AI modification disclosure watermark')
-    parser.add_argument('--strip-metadata', action='store_true', help='Do not preserve image EXIF/XMP/ICC metadata')
+    parser.add_argument('--strip-metadata', action='store_true', help='Do not preserve source image EXIF/XMP/ICC metadata')
     parser.add_argument('--video-compare', choices=['none', 'split', 'side_by_side'], default='none',
                         help='Export processed video normally, split-screen, or side-by-side')
     parser.add_argument('--parser-model', choices=list(PARSER_MODELS.keys()), default=DEFAULT_PARSER_MODEL,

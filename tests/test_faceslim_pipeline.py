@@ -10,6 +10,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image as PILImage
 
 import FaceSlim_v1 as faceslim
 
@@ -224,6 +225,9 @@ class BatchPipelineTests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertTrue(output_path.exists())
             self.assertIsNotNone(cv2.imread(str(output_path)))
+            with PILImage.open(output_path) as saved:
+                self.assertIn("XML:com.adobe.xmp", saved.info)
+                self.assertEqual(saved.info.get("FaceSlim:DisclosureWatermark"), "false")
 
     def test_worker_job_cancellation_skips_without_output(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,6 +261,37 @@ class BatchPipelineTests(unittest.TestCase):
             self.assertEqual(done[-1], (0, 0, 1))
             self.assertIn("Skipped before start", updates[-1][3])
             self.assertFalse(output_path.exists())
+
+
+class ProvenanceMetadataTests(unittest.TestCase):
+    def test_png_export_contains_xmp_and_iptc_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "out.png"
+            rgb = np.full((12, 12, 3), 180, dtype=np.uint8)
+
+            faceslim.save_rgb_image(str(output_path), rgb, None, preserve_metadata=False, watermark=True)
+
+            with PILImage.open(output_path) as saved:
+                xmp = saved.info["XML:com.adobe.xmp"]
+                self.assertIn(faceslim.IPTC_DIGITAL_SOURCE_TYPE, xmp)
+                self.assertIn("faceslim:DisclosureWatermark=\"true\"", xmp)
+                self.assertEqual(saved.info["IPTC:DigitalSourceType"], faceslim.IPTC_DIGITAL_SOURCE_TYPE)
+                self.assertEqual(saved.info["FaceSlim:SourceMetadataPreserved"], "false")
+
+    def test_jpeg_export_contains_exif_and_xmp_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "out.jpg"
+            rgb = np.full((12, 12, 3), 90, dtype=np.uint8)
+
+            faceslim.save_rgb_image(str(output_path), rgb, None, preserve_metadata=True, watermark=False)
+
+            data = output_path.read_bytes()
+            self.assertIn(b"http://ns.adobe.com/xap/1.0/", data)
+            self.assertIn(faceslim.IPTC_DIGITAL_SOURCE_TYPE.encode("utf-8"), data)
+            with PILImage.open(output_path) as saved:
+                exif = saved.getexif()
+                self.assertIn("FaceSlim", exif.get(305))
+                self.assertIn("AI modified by FaceSlim", exif.get(270))
 
 
 if __name__ == "__main__":

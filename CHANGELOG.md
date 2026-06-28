@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.18.0 - 2026-06-28
+
+- Added always-on FaceSlim provenance metadata to image exports.
+- Embedded IPTC/XMP DigitalSourceType, edit timestamp, tool version, disclosure-watermark state, and source-preservation state in PNG/JPEG outputs.
+- Updated `--strip-metadata` semantics so source metadata can be removed while FaceSlim provenance remains.
+
 ## FaceSlim v1.17.0 - 2026-06-28
 
 - Added `tools/bootstrap_dev.py` to create or repair `.venv`, reinstall requirements, and run local verification from one command.

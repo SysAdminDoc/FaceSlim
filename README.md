@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.17.0-blue)
+![Version](https://img.shields.io/badge/version-1.18.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -72,7 +72,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Batch Queue Dialog | Per-file status, progress, ETA, and single-job cancellation |
 | CLI Mode | Headless with presets and per-param control |
 | Docker CLI Image | Headless container build for farm rendering |
-| Metadata Preservation | Image exports preserve EXIF/ICC metadata by default |
+| Metadata Preservation | Image exports preserve source EXIF/ICC metadata by default and embed FaceSlim provenance |
 | Disclosure Watermark | Optional exported media badge declaring AI modification |
 | Responsible-Use Gate | First-launch acknowledgement for consent, disclosure, and platform-rule expectations |
 | Preset System | 9 built-in + unlimited custom presets (JSON) |
@@ -201,7 +201,7 @@ python FaceSlim_v1.py --list-presets
 | `--face-param` | `FACE:key=value` | Override one parameter for one face index |
 | `--manifest` | path | JSON batch manifest |
 | `--watermark` | flag | Add AI modification disclosure watermark |
-| `--strip-metadata` | flag | Do not preserve image EXIF/ICC metadata |
+| `--strip-metadata` | flag | Do not preserve source image EXIF/XMP/ICC metadata |
 | `--video-compare` | `none`, `split`, `side_by_side` | Export processed, split-screen, or side-by-side video |
 | `--parser-model` | `bisenet_resnet18`, `bisenet_resnet34` | Face parsing model for beauty masks |
 | `--list-presets` | flag | List all available presets |
@@ -255,6 +255,10 @@ Custom presets are stored as JSON in:
 
 Slider values persist between sessions via Qt settings. Crash logs are written to `crash.log`; render/export diagnostics are written as JSON lines to `render.log` in the application directory.
 The first GUI launch shows a responsible-use acknowledgement and stores it in Qt settings after acceptance.
+
+## Provenance Metadata
+
+Image exports always embed FaceSlim provenance metadata. PNG outputs include XMP and text fields, and JPEG/TIFF/WebP outputs include EXIF provenance; JPEG outputs also get an APP1 XMP packet. The metadata records FaceSlim version, edit timestamp, IPTC DigitalSourceType `algorithmicallyEnhanced`, source metadata preservation status, and whether the visual disclosure watermark was enabled. `--strip-metadata` removes source metadata from the output but keeps FaceSlim provenance.
 
 ## Models (Auto-Downloaded)
 
