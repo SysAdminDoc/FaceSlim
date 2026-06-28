@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.8.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.9.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -87,7 +87,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -549,6 +549,46 @@ def apply_skin_smoothing(frame, skin_mask, strength):
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
+def teeth_target_mask(parsing, feather=5):
+    """Return the mouth-interior mask used by teeth whitening."""
+    if parsing is None:
+        return None
+    mask = (parsing == PARSE_MOUTH).astype(np.float32)
+    if feather > 0:
+        k = max(3, feather) | 1
+        mask = cv2.GaussianBlur(mask, (k, k), 0)
+    return mask
+
+
+def apply_teeth_hint_overlay(frame, mask):
+    """Preview-only overlay for the teeth whitening target mask."""
+    if mask is None or mask.max() < 0.01:
+        return frame
+    mask = np.clip(mask.astype(np.float32), 0.0, 1.0)
+    overlay_color = np.array([137, 180, 250], dtype=np.float32)
+    result = frame.astype(np.float32)
+    mask_3 = mask[:, :, np.newaxis]
+    result = result * (1.0 - mask_3 * 0.38) + overlay_color * (mask_3 * 0.38)
+    edge = cv2.Canny((mask > 0.08).astype(np.uint8) * 255, 40, 120)
+    result[edge > 0] = np.array([243, 139, 168], dtype=np.float32)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def apply_teeth_hint_rois(frame, hint_rois):
+    if not hint_rois:
+        return frame
+    result = frame.copy()
+    for roi_bounds, mask in hint_rois:
+        rx1, ry1, rx2, ry2 = roi_bounds
+        if rx2 <= rx1 or ry2 <= ry1:
+            continue
+        roi = result[ry1:ry2, rx1:rx2]
+        if roi.size == 0 or mask.shape != roi.shape[:2]:
+            continue
+        result[ry1:ry2, rx1:rx2] = apply_teeth_hint_overlay(roi, mask)
+    return result
+
+
 def apply_teeth_whitening(frame, parsing, strength):
     """Whiten teeth within mouth interior mask.
     Uses HSV: increase V, decrease S in mouth interior only (not lips)."""
@@ -556,8 +596,7 @@ def apply_teeth_whitening(frame, parsing, strength):
         return frame
 
     # Only mouth interior (teeth/tongue visible area) - NOT lips
-    mask = (parsing == PARSE_MOUTH).astype(np.float32)
-    mask = cv2.GaussianBlur(mask, (5, 5), 0)
+    mask = teeth_target_mask(parsing, feather=5)
 
     if mask.max() < 0.01:
         return frame
@@ -1296,6 +1335,27 @@ class FaceWarpEngine:
         merged.pop('face_params', None)
         return merged
 
+    def teeth_hint_rois(self, frame, faces):
+        if self.parser is None or not faces:
+            return []
+        h, w = frame.shape[:2]
+        hint_rois = []
+        for i, face in enumerate(faces):
+            lms, _conf, _blendshapes = face_components(face)
+            try:
+                roi_bounds = self._compute_roi(lms, h, w, pad_ratio=0.30)
+                rx1, ry1, rx2, ry2 = roi_bounds
+                roi_region = frame[ry1:ry2, rx1:rx2]
+                if roi_region.size == 0:
+                    continue
+                parsing = self.parser.parse(roi_region)
+                mask = teeth_target_mask(parsing, feather=5)
+                if mask is not None and mask.max() >= 0.01:
+                    hint_rois.append((roi_bounds, mask))
+            except Exception as e:
+                print(f"Teeth hint mask error face {i}: {e}")
+        return hint_rois
+
     # ── GPU TPS ─────────────────────────────────────────────────
     def _tps_kernel(self, src_t, eval_t):
         diff = eval_t.unsqueeze(1) - src_t.unsqueeze(0)
@@ -1873,14 +1933,14 @@ class ParamHistory:
 # VIDEO THREAD (real-time preview)
 # ═══════════════════════════════════════════════════════════════════════════
 class VideoThread(QThread):
-    frame_ready = pyqtSignal(np.ndarray, np.ndarray, list)  # orig, proc, faces
+    frame_ready = pyqtSignal(np.ndarray, np.ndarray, list, object)  # orig, proc, faces, teeth_hint_rois
     fps_update = pyqtSignal(float)
     status_update = pyqtSignal(str)
     error_update = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
-        self.running = self.show_landmarks = self.show_confidence = False
+        self.running = self.show_landmarks = self.show_confidence = self.show_teeth_hint = False
         self.paused = False
         self.source = None
         self.params = DEFAULT_PARAMS.copy()
@@ -1934,13 +1994,14 @@ class VideoThread(QThread):
                     eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
 
                     proc = eng.warp(rgb, faces, self.params) if (faces and has_fx) else rgb.copy()
+                    teeth_hint_rois = eng.teeth_hint_rois(proc, faces) if (self.show_teeth_hint and faces) else []
 
                     el = time.time() - t0
                     fps_t.append(el)
                     if len(fps_t) > 2:
                         self.fps_update.emit(1.0 / max(sum(fps_t)/len(fps_t), 0.001))
 
-                    self.frame_ready.emit(rgb, proc, faces)
+                    self.frame_ready.emit(rgb, proc, faces, teeth_hint_rois)
                 except Exception as e:
                     print(f"Frame processing error: {e}")
 
@@ -2335,6 +2396,7 @@ class FaceSlimApp(QMainWindow):
         self.current_original = None
         self.current_processed = None
         self.current_faces = []
+        self.current_teeth_hint_rois = []
         self.history = ParamHistory()
         self.image_mode = False  # True when viewing a single image
         self._image_engine = None  # Cached engine for image mode
@@ -2483,6 +2545,8 @@ class FaceSlimApp(QMainWindow):
         opts_row.addWidget(self.chk_lm)
         self.chk_conf = QCheckBox("Confidence"); self.chk_conf.toggled.connect(self._tog_conf)
         opts_row.addWidget(self.chk_conf)
+        self.chk_teeth_hint = QCheckBox("Teeth Mask"); self.chk_teeth_hint.toggled.connect(self._tog_teeth_hint)
+        opts_row.addWidget(self.chk_teeth_hint)
         g2l.addLayout(opts_row)
 
         faces_row = QHBoxLayout()
@@ -2652,6 +2716,12 @@ class FaceSlimApp(QMainWindow):
         if self.video_thread: self.video_thread.show_confidence = on
         if self.image_mode and self.current_original is not None and self.current_processed is not None:
             self._display_frame(self.current_original, self.current_processed, self.current_faces)
+    def _tog_teeth_hint(self, on):
+        if self.video_thread:
+            self.video_thread.show_teeth_hint = on
+        if self.image_mode and self.current_original is not None and self.current_processed is not None:
+            self._compute_image_teeth_hint_rois()
+            self._display_frame(self.current_original, self.current_processed, self.current_faces)
     def _toggle_compare(self, checked):
         self.comparison_mode = checked
         if checked: self.video_label.divider_ratio = 0.5
@@ -2798,8 +2868,17 @@ class FaceSlimApp(QMainWindow):
         result, faces = self._image_engine.warp_single_image(self.current_original, self._p())
         self.current_processed = result
         self.current_faces = faces
+        self._compute_image_teeth_hint_rois()
         self.face_count_label.setText(f"  {len(faces)} face{'s' if len(faces) != 1 else ''} detected")
         self._display_frame(self.current_original, result, faces)
+
+    def _compute_image_teeth_hint_rois(self):
+        self.current_teeth_hint_rois = []
+        if (not hasattr(self, "chk_teeth_hint") or not self.chk_teeth_hint.isChecked()
+                or self._image_engine is None or self.current_processed is None or not self.current_faces):
+            return
+        self.current_teeth_hint_rois = self._image_engine.teeth_hint_rois(
+            self.current_processed, self.current_faces)
 
     def _go(self, src):
         self.stop_video()
@@ -2808,6 +2887,7 @@ class FaceSlimApp(QMainWindow):
         self.video_thread.update_params(self._p())
         self.video_thread.show_landmarks = self.chk_lm.isChecked()
         self.video_thread.show_confidence = self.chk_conf.isChecked()
+        self.video_thread.show_teeth_hint = self.chk_teeth_hint.isChecked()
         self.video_thread.max_faces = self.spin_faces.value()
         self.video_thread.parser_model = self._parser_model_key()
         scales = [1.0, 0.75, 0.5]
@@ -2827,10 +2907,11 @@ class FaceSlimApp(QMainWindow):
         self.btn_stop.setEnabled(False); self.fps_label.setText("-- FPS")
 
     # ── Frame Display ───────────────────────────────────────────
-    def _on_frame(self, orig, proc, faces):
+    def _on_frame(self, orig, proc, faces, teeth_hint_rois=None):
         self.current_original = orig
         self.current_processed = proc
         self.current_faces = faces
+        self.current_teeth_hint_rois = teeth_hint_rois or []
         self.face_count_label.setText(f"  {len(faces)} face{'s' if len(faces) != 1 else ''}")
         self.btn_exp_img.setEnabled(True)
         self.btn_exp_gif.setEnabled(len(faces) > 0)
@@ -2842,8 +2923,10 @@ class FaceSlimApp(QMainWindow):
         if self.comparison_mode:
             h, w = orig.shape[:2]
             sx = max(1, min(w - 1, int(w * self.video_label.divider_ratio)))
+            proc_show = (apply_teeth_hint_rois(proc, self.current_teeth_hint_rois)
+                         if self.chk_teeth_hint.isChecked() else proc)
             show = np.empty_like(orig)
-            show[:, :sx] = orig[:, :sx]; show[:, sx:] = proc[:, sx:]
+            show[:, :sx] = orig[:, :sx]; show[:, sx:] = proc_show[:, sx:]
             cv2.line(show, (sx, 0), (sx, h), (203, 166, 247), 3)
             cy = h // 2
             cv2.fillPoly(show, [np.array([[sx-8,cy-12],[sx+8,cy-12],[sx+8,cy+12],[sx-8,cy+12]])], (203,166,247))
@@ -2853,7 +2936,8 @@ class FaceSlimApp(QMainWindow):
                 cv2.rectangle(show, (tx-4, 10), (tx+tw+4, th+22), (30,30,46), -1)
                 cv2.putText(show, text, (tx, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
         else:
-            show = proc
+            show = (apply_teeth_hint_rois(proc, self.current_teeth_hint_rois)
+                    if self.chk_teeth_hint.isChecked() else proc)
 
         show_lm = (self.video_thread and self.video_thread.show_landmarks) if self.video_thread else self.chk_lm.isChecked()
         show_conf = (self.video_thread and self.video_thread.show_confidence) if self.video_thread else self.chk_conf.isChecked()
@@ -3013,6 +3097,7 @@ class FaceSlimApp(QMainWindow):
             s.setValue(self.settings.value(f"s/{k}", s.value(), type=int))
         self.spin_faces.setValue(self.settings.value("max_faces", 1, type=int))
         self.chk_watermark.setChecked(self.settings.value("watermark", False, type=bool))
+        self.chk_teeth_hint.setChecked(self.settings.value("teeth_hint", False, type=bool))
         self.combo_video_compare.setCurrentIndex(self.settings.value("video_compare", 0, type=int))
         saved_parser = parser_model_key(self.settings.value("parser_model", DEFAULT_PARSER_MODEL, type=str))
         parser_idx = self.combo_parser_model.findData(saved_parser)
@@ -3025,6 +3110,7 @@ class FaceSlimApp(QMainWindow):
             self.settings.setValue(f"s/{k}", s.value())
         self.settings.setValue("max_faces", self.spin_faces.value())
         self.settings.setValue("watermark", self.chk_watermark.isChecked())
+        self.settings.setValue("teeth_hint", self.chk_teeth_hint.isChecked())
         self.settings.setValue("video_compare", self.combo_video_compare.currentIndex())
         self.settings.setValue("parser_model", self._parser_model_key())
 

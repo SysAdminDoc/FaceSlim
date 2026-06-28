@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.8.0-blue)
+![Version](https://img.shields.io/badge/version-1.9.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -43,6 +43,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Skin Smoothing | Smooths skin while preserving texture | Frequency-separation bilateral filter on skin-only mask |
 | Skin Tone Even | Reduces redness and blotchiness | LAB color correction + mean-color blending |
 | Teeth Whitening | Brightens teeth naturally | HSV saturation/brightness on mouth interior only |
+| Teeth Target Mask | Shows the exact whitening target in preview | Visual-only BiSeNet mouth-interior overlay |
 | Eye Sharpen | Sharpens iris and brow detail | Unsharp mask on eye/brow parsing region |
 | Lip Color | Boosts lip saturation and warmth | HSV saturation boost on lip parsing region |
 | Under-Eye Smooth | Smooths the infraorbital region separately | Landmark-guided under-eye mask + skin smoother |
@@ -111,7 +112,7 @@ Video Mode Only:
 python FaceSlim_v1.py
 ```
 
-The interface has three tabs: **Reshape** (sliders for all effects), **Presets** (built-in/custom preset management), and **Export** (video export, screenshots, batch, GIF).
+The interface has three tabs: **Reshape** (sliders for all effects plus preview overlays), **Presets** (built-in/custom preset management), and **Export** (video export, screenshots, batch, GIF).
 
 ### CLI Mode
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.9.0 - 2026-06-28
+
+- Added a visual-only Teeth Mask preview overlay for the BiSeNet mouth-interior whitening target.
+- Kept the hint overlay out of exported image/video data by storing masks separately from processed frames.
+
 ## FaceSlim v1.8.0 - 2026-06-28
 
 - Added expression neutralization with MediaPipe blendshape scores to soften frowns and raised/lowered brows.
