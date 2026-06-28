@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.15.0 - 2026-06-28
+
+- Added exact-size and SHA-256 verification for all auto-downloaded model artifacts.
+- Added atomic model download replacement with corrupt-cache retry handling.
+- Added a local `unittest` regression suite for CLI, manifest, batch, cancellation, and image export paths.
+
 ## FaceSlim v1.14.0 - 2026-06-28
 
 - Added an OBS-compatible Virtual Cam preview toggle powered by `pyvirtualcam`.

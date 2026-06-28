@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.14.0-blue)
+![Version](https://img.shields.io/badge/version-1.15.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -259,14 +259,14 @@ The first GUI launch shows a responsible-use acknowledgement and stores it in Qt
 
 ## Models (Auto-Downloaded)
 
-| Model | Size | Source | Purpose |
-|-------|------|--------|---------|
-| `face_landmarker.task` | ~3.7 MB | Google MediaPipe | 478-point face landmarks |
-| `bisenet_face_parsing.onnx` | ~50 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Fast 19-class face segmentation (CelebAMask-HQ) |
-| `bisenet_resnet34.onnx` | ~94 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Higher-quality 19-class face segmentation (CelebAMask-HQ) |
-| `modnet_photographic.onnx` | ~25 MB | [yakhyo/modnet](https://github.com/yakhyo/modnet) | Optional portrait matte for ROI edge refinement |
+| Model | Expected size | SHA-256 prefix | Source | Purpose |
+|-------|---------------|---------------|--------|---------|
+| `face_landmarker.task` | 3,758,596 bytes | `64184e229b26` | Google MediaPipe | 478-point face landmarks |
+| `bisenet_face_parsing.onnx` | 53,205,364 bytes | `0d9bd318e469` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Fast 19-class face segmentation (CelebAMask-HQ) |
+| `bisenet_resnet34.onnx` | 93,632,554 bytes | `5b805bba7b56` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Higher-quality 19-class face segmentation (CelebAMask-HQ) |
+| `modnet_photographic.onnx` | 25,969,398 bytes | `5069a5e306b9` | [yakhyo/modnet](https://github.com/yakhyo/modnet) | Optional portrait matte for ROI edge refinement |
 
-The face landmarker and selected parser model are downloaded automatically on first use. MODNet downloads only when matting refinement is enabled. If the selected BiSeNet model fails to download, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
+The face landmarker and selected parser model are downloaded automatically on first use. Each cached or downloaded model must match the versioned in-app manifest by exact byte size and SHA-256 before it is used; corrupt caches are deleted and downloaded again through an atomic temporary file. MODNet downloads only when matting refinement is enabled. If the selected BiSeNet model fails to download or verify, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
 
 ## Requirements
 
@@ -281,6 +281,12 @@ The face landmarker and selected parser model are downloaded automatically on fi
 ```bash
 python -m pip install -r requirements.txt
 pyinstaller FaceSlim.spec --noconfirm --clean
+```
+
+Run the local regression suite with:
+
+```bash
+python -m unittest discover -s tests
 ```
 
 The Windows executable is emitted at `dist/FaceSlim.exe`. The spec includes a multiprocessing freeze guard to prevent frozen MediaPipe/OpenCV worker relaunch loops.

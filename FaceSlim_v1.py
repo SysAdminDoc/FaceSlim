@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.14.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.15.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -16,7 +16,7 @@ Dependencies install from requirements.txt; models download on first use.
 import multiprocessing
 multiprocessing.freeze_support()
 
-import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob, threading
+import sys, os, subprocess, time, json, math, traceback, urllib.request, argparse, glob, threading, hashlib
 from collections import deque
 from pathlib import Path
 
@@ -95,10 +95,8 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.14.0"
+VERSION = "1.15.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
-MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
 CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), '.faceslim')
 PRESETS_DIR = os.path.join(CONFIG_DIR, 'presets')
 os.makedirs(PRESETS_DIR, exist_ok=True)
@@ -119,40 +117,99 @@ def exception_handler(exc_type, exc_value, exc_tb):
 
 sys.excepthook = exception_handler
 
-def ensure_model():
-    if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 1_000_000:
-        return True
-    print("Downloading face landmarker model (~3.7 MB)...")
-    tmp_path = MODEL_PATH + '.tmp'
+MODEL_MANIFEST_VERSION = 1
+LANDMARK_MODEL = {
+    "key": "face_landmarker",
+    "label": "MediaPipe Face Landmarker",
+    "filename": "face_landmarker.task",
+    "url": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+    "size_bytes": 3_758_596,
+    "sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+}
+MODEL_PATH = os.path.join(APP_DIR, LANDMARK_MODEL["filename"])
+MODEL_URL = LANDMARK_MODEL["url"]
+
+def _model_path(cfg):
+    return os.path.join(APP_DIR, cfg["filename"])
+
+def _format_size(size_bytes):
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+def _remove_quietly(path):
     try:
-        urllib.request.urlretrieve(MODEL_URL, tmp_path)
-        if os.path.getsize(tmp_path) > 1_000_000:
-            os.replace(tmp_path, MODEL_PATH)
-            return True
-        else:
-            os.remove(tmp_path)
-            print("Downloaded file too small - may be corrupt")
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def validate_model_artifact(path, cfg):
+    if not os.path.exists(path):
+        return False, "missing"
+    actual_size = os.path.getsize(path)
+    expected_size = int(cfg["size_bytes"])
+    if actual_size != expected_size:
+        return False, f"size {actual_size} bytes, expected {expected_size}"
+    actual_hash = _sha256_file(path)
+    expected_hash = cfg["sha256"].lower()
+    if actual_hash.lower() != expected_hash:
+        return False, f"sha256 {actual_hash}, expected {expected_hash}"
+    return True, "verified"
+
+def _download_verified_model(cfg, optional_failure_note=None):
+    path = _model_path(cfg)
+    ok, reason = validate_model_artifact(path, cfg)
+    if ok:
+        return True
+    if os.path.exists(path):
+        print(f"  Cached {cfg['label']} is invalid ({reason}); re-downloading.")
+        _remove_quietly(path)
+
+    tmp_path = f"{path}.download-{os.getpid()}.tmp"
+    print(f"Downloading {cfg['label']} ({_format_size(cfg['size_bytes'])})...")
+    try:
+        _remove_quietly(tmp_path)
+        urllib.request.urlretrieve(cfg["url"], tmp_path)
+        ok, reason = validate_model_artifact(tmp_path, cfg)
+        if not ok:
+            _remove_quietly(tmp_path)
+            print(f"  Downloaded {cfg['label']} failed verification: {reason}")
             return False
+        os.replace(tmp_path, path)
+        print(f"  {cfg['label']} verified: sha256 {cfg['sha256'][:12]}...")
+        return True
     except Exception as e:
-        if os.path.exists(tmp_path):
-            try: os.remove(tmp_path)
-            except OSError: pass
-        print(f"Failed to download model: {e}")
+        _remove_quietly(tmp_path)
+        note = f" ({optional_failure_note})" if optional_failure_note else ""
+        print(f"  {cfg['label']} download failed: {e}{note}")
         return False
+
+def ensure_model():
+    return _download_verified_model(LANDMARK_MODEL)
 
 # ── Face Parsing Models ────────────────────────────────────────────────
 PARSER_MODELS = {
     "bisenet_resnet18": {
+        "key": "bisenet_resnet18",
         "label": "BiSeNet ResNet18 (fast)",
         "filename": "bisenet_face_parsing.onnx",
         "url": "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx",
-        "min_bytes": 40_000_000,
+        "size_bytes": 53_205_364,
+        "sha256": "0d9bd318e46987c3bdbfacae9e2c0f461cae1c6ac6ea6d43bbe541a91727e33f",
     },
     "bisenet_resnet34": {
+        "key": "bisenet_resnet34",
         "label": "BiSeNet ResNet34 (quality)",
         "filename": "bisenet_resnet34.onnx",
         "url": "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet34.onnx",
-        "min_bytes": 80_000_000,
+        "size_bytes": 93_632_554,
+        "sha256": "5b805bba7b5660ab7070b5a381dcf75e5b3e04199f1e9387232a77a00095102e",
     },
 }
 DEFAULT_PARSER_MODEL = "bisenet_resnet18"
@@ -201,66 +258,39 @@ def parser_model_path(model_key=None):
 def parser_model_ready(model_key=None):
     cfg = PARSER_MODELS[parser_model_key(model_key)]
     path = parser_model_path(model_key)
-    return os.path.exists(path) and os.path.getsize(path) > cfg["min_bytes"]
+    return validate_model_artifact(path, cfg)[0]
 
 def ensure_parsing_model(model_key=None):
     global HAS_BISENET, ACTIVE_PARSER_MODEL, ACTIVE_PARSER_PATH
     key = parser_model_key(model_key)
     cfg = PARSER_MODELS[key]
     path = parser_model_path(key)
-    if parser_model_ready(key):
+    if _download_verified_model(cfg, "will use landmark fallback"):
         HAS_BISENET = True
         ACTIVE_PARSER_MODEL = key
         ACTIVE_PARSER_PATH = path
+        print(f"  Face parsing model ready: {cfg['label']}")
         return True
-    print(f"Downloading {cfg['label']} face parsing model...")
-    tmp = path + '.tmp'
-    try:
-        urllib.request.urlretrieve(cfg["url"], tmp)
-        if os.path.getsize(tmp) > cfg["min_bytes"]:
-            os.replace(tmp, path)
-            HAS_BISENET = True
-            ACTIVE_PARSER_MODEL = key
-            ACTIVE_PARSER_PATH = path
-            print(f"  Face parsing model ready: {cfg['label']}")
-            return True
-        else:
-            os.remove(tmp)
-            print("  Downloaded file too small")
-            return False
-    except Exception as e:
-        if os.path.exists(tmp):
-            try: os.remove(tmp)
-            except OSError: pass
-        print(f"  Face parsing download failed: {e} (will use landmark fallback)")
-        HAS_BISENET = False
-        return False
+    HAS_BISENET = False
+    return False
 
 # ── MODNet Matting Refinement ──────────────────────────────────────────
-MODNET_PATH = os.path.join(APP_DIR, "modnet_photographic.onnx")
-MODNET_URL = "https://github.com/yakhyo/modnet/releases/download/weights/modnet_photographic.onnx"
+MATTE_MODEL = {
+    "key": "modnet_photographic",
+    "label": "MODNet Photographic Matting",
+    "filename": "modnet_photographic.onnx",
+    "url": "https://github.com/yakhyo/modnet/releases/download/weights/modnet_photographic.onnx",
+    "size_bytes": 25_969_398,
+    "sha256": "5069a5e306b9f5e9f4f2b0360264c9f8ea13b257c7c39943c7cf6a2ec3a102ae",
+}
+MODNET_PATH = _model_path(MATTE_MODEL)
+MODNET_URL = MATTE_MODEL["url"]
 
 def ensure_matting_model():
-    if os.path.exists(MODNET_PATH) and os.path.getsize(MODNET_PATH) > 20_000_000:
+    if _download_verified_model(MATTE_MODEL, "matting refinement disabled"):
+        print("  MODNet matting model ready")
         return True
-    print("Downloading MODNet photographic matting model (~25 MB)...")
-    tmp = MODNET_PATH + '.tmp'
-    try:
-        urllib.request.urlretrieve(MODNET_URL, tmp)
-        if os.path.getsize(tmp) > 20_000_000:
-            os.replace(tmp, MODNET_PATH)
-            print("  MODNet matting model ready")
-            return True
-        else:
-            os.remove(tmp)
-            print("  Downloaded file too small")
-            return False
-    except Exception as e:
-        if os.path.exists(tmp):
-            try: os.remove(tmp)
-            except OSError: pass
-        print(f"  MODNet download failed: {e} (matting refinement disabled)")
-        return False
+    return False
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LANDMARK INDICES
