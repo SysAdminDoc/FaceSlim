@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.12.0-blue)
+![Version](https://img.shields.io/badge/version-1.13.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -71,6 +71,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Batch Manifest | JSON jobs with per-file preset, face overrides, output, watermark, and compare settings |
 | Batch Queue Dialog | Per-file status, progress, ETA, and single-job cancellation |
 | CLI Mode | Headless with presets and per-param control |
+| Docker CLI Image | Headless container build for farm rendering |
 | Metadata Preservation | Image exports preserve EXIF/ICC metadata by default |
 | Disclosure Watermark | Optional exported media badge declaring AI modification |
 | Responsible-Use Gate | First-launch acknowledgement for consent, disclosure, and platform-rule expectations |
@@ -281,6 +282,15 @@ pyinstaller FaceSlim.spec --noconfirm --clean
 ```
 
 The Windows executable is emitted at `dist/FaceSlim.exe`. The spec includes a multiprocessing freeze guard to prevent frozen MediaPipe/OpenCV worker relaunch loops.
+
+## Docker CLI
+
+```bash
+docker build -t faceslim-cli .
+docker run --rm -v "%cd%:/data" faceslim-cli --input /data/photo.jpg --output /data/faceslim_output --preset Moderate
+```
+
+The container uses `requirements-docker.txt`, `opencv-python-headless`, and `QT_QPA_PLATFORM=offscreen` for CLI-only rendering.
 
 ## Supported Formats
 

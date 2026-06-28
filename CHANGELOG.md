@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.13.0 - 2026-06-28
+
+- Added a Docker CLI image path with a slim Dockerfile, `.dockerignore`, and reduced runtime requirements.
+- Documented headless container usage for farm rendering.
+
 ## FaceSlim v1.12.0 - 2026-06-28
 
 - Added a first-launch responsible-use gate for consent, disclosure, and platform-rule expectations.

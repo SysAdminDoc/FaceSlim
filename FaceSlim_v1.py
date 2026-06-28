@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.12.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.13.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -88,7 +88,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.12.0"
+VERSION = "1.13.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
