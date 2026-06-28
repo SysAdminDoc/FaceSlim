@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.13.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.14.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -55,6 +55,13 @@ from scipy.interpolate import RBFInterpolator
 from PIL import Image as PILImage, PngImagePlugin
 import onnxruntime as ort
 
+try:
+    import pyvirtualcam
+    HAS_VIRTUALCAM = True
+except Exception:
+    pyvirtualcam = None
+    HAS_VIRTUALCAM = False
+
 # -- Qt Imports (must precede QThread subclasses) --
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -88,7 +95,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -1961,6 +1968,7 @@ class VideoThread(QThread):
     frame_ready = pyqtSignal(np.ndarray, np.ndarray, list, object)  # orig, proc, faces, teeth_hint_rois
     fps_update = pyqtSignal(float)
     timeline_update = pyqtSignal(float, float)  # current seconds, duration seconds
+    virtualcam_update = pyqtSignal(bool, str)
     status_update = pyqtSignal(str)
     error_update = pyqtSignal(str)
 
@@ -1973,6 +1981,7 @@ class VideoThread(QThread):
         self.max_faces = 1
         self.parser_model = DEFAULT_PARSER_MODEL
         self.preview_scale = 1.0  # 1.0 = full res, 0.5 = half
+        self.virtualcam_enabled = False
         self._seek_seconds = None
         self._seek_lock = threading.Lock()
 
@@ -1991,6 +2000,8 @@ class VideoThread(QThread):
     def run(self):
         eng = None
         cap = None
+        virtual_cam = None
+        virtual_cam_shape = None
         try:
             self.running = True
             eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
@@ -2051,6 +2062,24 @@ class VideoThread(QThread):
 
                     proc = eng.warp(rgb, faces, self.params) if (faces and has_fx) else rgb.copy()
                     teeth_hint_rois = eng.teeth_hint_rois(proc, faces) if (self.show_teeth_hint and faces) else []
+                    if self.virtualcam_enabled:
+                        try:
+                            vh, vw = proc.shape[:2]
+                            if virtual_cam is None or virtual_cam_shape != (vw, vh):
+                                if virtual_cam is not None:
+                                    virtual_cam.close()
+                                virtual_cam = pyvirtualcam.Camera(
+                                    width=vw, height=vh, fps=max(1, int(fps or 30)),
+                                    fmt=pyvirtualcam.PixelFormat.RGB)
+                                virtual_cam_shape = (vw, vh)
+                                self.virtualcam_update.emit(True, f"Virtual camera: {vw}x{vh}")
+                            virtual_cam.send(np.ascontiguousarray(proc))
+                        except Exception as e:
+                            self.virtualcam_enabled = False
+                            if virtual_cam is not None:
+                                virtual_cam.close()
+                                virtual_cam = None
+                            self.virtualcam_update.emit(False, f"Virtual camera unavailable: {e}")
 
                     el = time.time() - t0
                     fps_t.append(el)
@@ -2070,6 +2099,8 @@ class VideoThread(QThread):
                 cap.release()
             if eng is not None:
                 eng.close()
+            if virtual_cam is not None:
+                virtual_cam.close()
 
     def stop(self):
         self.running = False; self.wait(3000)
@@ -2758,6 +2789,11 @@ class FaceSlimApp(QMainWindow):
 
         self.btn_cmp = QPushButton("A/B Compare"); self.btn_cmp.setCheckable(True)
         self.btn_cmp.toggled.connect(self._toggle_compare); tr.addWidget(self.btn_cmp)
+        self.btn_virtualcam = QPushButton("Virtual Cam"); self.btn_virtualcam.setCheckable(True)
+        self.btn_virtualcam.setProperty("secondary", True)
+        self.btn_virtualcam.clicked.connect(self._toggle_virtualcam)
+        self.btn_virtualcam.setEnabled(False)
+        tr.addWidget(self.btn_virtualcam)
         left.addLayout(tr)
         root.addLayout(left, 3)
 
@@ -3008,6 +3044,19 @@ class FaceSlimApp(QMainWindow):
         if self.image_mode and self.current_original is not None and self.current_processed is not None:
             self._display_frame(self.current_original, self.current_processed, self.current_faces)
 
+    def _toggle_virtualcam(self, checked):
+        if checked and not HAS_VIRTUALCAM:
+            self.btn_virtualcam.setChecked(False)
+            self.toast.show_message("Install pyvirtualcam to enable virtual camera", 4000)
+            return
+        if checked and not self.video_thread:
+            self.btn_virtualcam.setChecked(False)
+            self.toast.show_message("Start webcam or video first")
+            return
+        if self.video_thread:
+            self.video_thread.virtualcam_enabled = checked
+        self.toast.show_message("Virtual camera starting..." if checked else "Virtual camera stopped")
+
     def _on_faces_changed(self, val):
         if self.video_thread and self.video_thread.isRunning():
             src = self.video_thread.source
@@ -3220,10 +3269,12 @@ class FaceSlimApp(QMainWindow):
         self.video_thread.frame_ready.connect(self._on_frame)
         self.video_thread.fps_update.connect(self._on_fps)
         self.video_thread.timeline_update.connect(self._on_timeline)
+        self.video_thread.virtualcam_update.connect(self._on_virtualcam_update)
         self.video_thread.status_update.connect(self.statusBar().showMessage)
         self.video_thread.error_update.connect(self._on_video_error)
         self.video_thread.start()
         self.btn_stop.setEnabled(True)
+        self.btn_virtualcam.setEnabled(True)
         nm = "Webcam" if src is None else os.path.basename(src)
         self.statusBar().showMessage(f"Playing: {nm}")
 
@@ -3231,6 +3282,10 @@ class FaceSlimApp(QMainWindow):
         if self.video_thread and self.video_thread.isRunning():
             self.video_thread.stop(); self.video_thread = None
         self._reset_timeline()
+        self.btn_virtualcam.blockSignals(True)
+        self.btn_virtualcam.setChecked(False)
+        self.btn_virtualcam.setEnabled(False)
+        self.btn_virtualcam.blockSignals(False)
         self.btn_stop.setEnabled(False); self.fps_label.setText("-- FPS")
 
     # ── Frame Display ───────────────────────────────────────────
@@ -3290,6 +3345,13 @@ class FaceSlimApp(QMainWindow):
         self.toast.show_message(msg, 4000)
         self.btn_stop.setEnabled(False)
         self.fps_label.setText("-- FPS")
+
+    def _on_virtualcam_update(self, enabled, msg):
+        self.btn_virtualcam.blockSignals(True)
+        self.btn_virtualcam.setChecked(enabled)
+        self.btn_virtualcam.blockSignals(False)
+        self.statusBar().showMessage(msg)
+        self.toast.show_message(msg, 4000)
 
     # ── Export: Video ───────────────────────────────────────────
     def export_video(self):

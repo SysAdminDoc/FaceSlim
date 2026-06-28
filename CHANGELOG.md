@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.14.0 - 2026-06-28
+
+- Added an OBS-compatible Virtual Cam preview toggle powered by `pyvirtualcam`.
+- Added graceful UI feedback when the local virtual-camera backend is unavailable.
+
 ## FaceSlim v1.13.0 - 2026-06-28
 
 - Added a Docker CLI image path with a slim Dockerfile, `.dockerignore`, and reduced runtime requirements.

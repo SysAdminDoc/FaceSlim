@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.13.0-blue)
+![Version](https://img.shields.io/badge/version-1.14.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -66,6 +66,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Per-Face Overrides | CLI/manifest can apply different presets or values per face index |
 | Real-Time Preview | Webcam/video with live slider adjustment |
 | Video Timeline Scrubber | Per-second seeking with current slider-state preview |
+| OBS Virtual Camera | Stream the processed preview to an OBS-compatible virtual webcam |
 | A/B Compare | Draggable split-screen before/after overlay |
 | Batch Processing | Folder/multi-file image and video processing |
 | Batch Manifest | JSON jobs with per-file preset, face overrides, output, watermark, and compare settings |
@@ -273,6 +274,7 @@ The face landmarker and selected parser model are downloaded automatically on fi
 - **Install:** `python -m pip install -r requirements.txt`
 - **Optional:** PyTorch + CUDA for GPU acceleration (auto-detected)
 - **Optional:** FFmpeg for audio muxing on video exports
+- **Optional:** OBS Virtual Camera driver for the Virtual Cam preview output
 
 ## Build
 

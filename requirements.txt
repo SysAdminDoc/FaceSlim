@@ -5,6 +5,7 @@ numpy==1.26.4
 scipy==1.13.1
 Pillow==10.4.0
 onnxruntime==1.18.1
+pyvirtualcam==0.15.0
 pyinstaller==6.21.0
 jax==0.4.30
 jaxlib==0.4.30
