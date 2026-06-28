@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.6.0-blue)
+![Version](https://img.shields.io/badge/version-1.7.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -18,7 +18,7 @@ python -m venv .venv
 python FaceSlim_v1.py
 ```
 
-On first launch, FaceSlim downloads the face landmarker (~3.7 MB) and the selected BiSeNet parsing model (~50-94 MB). Python dependencies are installed through `requirements.txt`.
+On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected BiSeNet parsing model (~50-94 MB), and MODNet (~25 MB) only when matting refinement is enabled. Python dependencies are installed through `requirements.txt`.
 
 ## Features
 
@@ -54,6 +54,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB) and the select
 |---------|-------------|
 | BiSeNet Face Parsing | 19-class pixel-level segmentation via ONNX Runtime |
 | Parser Model Selector | Toggle BiSeNet ResNet18 or ResNet34 ONNX masks in Settings/CLI |
+| MODNet Matting Refinement | Optional portrait matte edge refinement for ROI warp masks |
 | Background Protection | ROI-isolated warp + seamless clone composite |
 | Temporal Mask Smoothing | EMA filter prevents parsing mask flicker on video |
 | Optical Flow Propagation | Warp displacement propagation between TPS keyframes |
@@ -144,6 +145,9 @@ python FaceSlim_v1.py --input video.mp4 --preset Glamour --video-compare split -
 # Higher-quality parser model
 python FaceSlim_v1.py --input photo.jpg --parser-model bisenet_resnet34 --skin-smooth 35
 
+# Cleaner face/background boundary on strong warps
+python FaceSlim_v1.py --input photo.jpg --jaw 45 --matting-refine 70
+
 # List available presets
 python FaceSlim_v1.py --list-presets
 ```
@@ -178,6 +182,7 @@ python FaceSlim_v1.py --list-presets
 | `--smoothing` | 10-100 | Warp field smoothness |
 | `--temporal` | 0-100 | Temporal landmark smoothing |
 | `--bg-protect` | 0-100 | Background protection |
+| `--matting-refine` | 0-100 | MODNet mask edge refinement |
 | `--faces` | 1-5 | Max faces to process |
 | `--face-preset` | `FACE=PRESET` | Apply a preset to one face index |
 | `--face-param` | `FACE:key=value` | Override one parameter for one face index |
@@ -244,8 +249,9 @@ Slider values persist between sessions via Qt settings. Crash logs are written t
 | `face_landmarker.task` | ~3.7 MB | Google MediaPipe | 478-point face landmarks |
 | `bisenet_face_parsing.onnx` | ~50 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Fast 19-class face segmentation (CelebAMask-HQ) |
 | `bisenet_resnet34.onnx` | ~94 MB | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Higher-quality 19-class face segmentation (CelebAMask-HQ) |
+| `modnet_photographic.onnx` | ~25 MB | [yakhyo/modnet](https://github.com/yakhyo/modnet) | Optional portrait matte for ROI edge refinement |
 
-The face landmarker and selected parser model are downloaded automatically on first use. If the selected BiSeNet model fails to download, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
+The face landmarker and selected parser model are downloaded automatically on first use. MODNet downloads only when matting refinement is enabled. If the selected BiSeNet model fails to download, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
 
 ## Requirements
 
@@ -280,6 +286,9 @@ Use the Preview Scale dropdown (75% or 50%) in the Quality group. Install PyTorc
 
 **Warp affects the background**
 Increase the Background Protection slider. At 70+ (default), warping is confined to the face ROI and blended back with seamless clone.
+
+**Face/background boundary looks soft on a strong warp**
+Increase the Matting Refine slider. FaceSlim downloads MODNet on first use and multiplies the ROI blend mask by a portrait matte to reduce background bleed.
 
 **Video export has no audio**
 Install FFmpeg and make sure it's on your PATH. FaceSlim automatically muxes audio from the original file when FFmpeg is available.

@@ -20,6 +20,7 @@ dist/
 face_landmarker.task
 bisenet_*.onnx
 bisenet_face_parsing.onnx
+modnet_*.onnx
 *.tmp
 crash.log
 faceslim_output/

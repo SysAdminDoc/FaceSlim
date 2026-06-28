@@ -1,5 +1,10 @@
 # Changelog
 
+## FaceSlim v1.7.0 - 2026-06-27
+
+- Added optional MODNet ONNX matting refinement for ROI warp masks.
+- Added GUI and CLI controls for `matting_refine` and documented the MODNet model.
+
 ## FaceSlim v1.6.0 - 2026-06-27
 
 - Added selectable BiSeNet ResNet18/ResNet34 ONNX parser models for GUI, CLI, exports, and batch manifests.

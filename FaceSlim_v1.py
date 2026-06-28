@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.6.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.7.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -87,7 +87,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -228,6 +228,32 @@ def ensure_parsing_model(model_key=None):
         HAS_BISENET = False
         return False
 
+# ── MODNet Matting Refinement ──────────────────────────────────────────
+MODNET_PATH = os.path.join(APP_DIR, "modnet_photographic.onnx")
+MODNET_URL = "https://github.com/yakhyo/modnet/releases/download/weights/modnet_photographic.onnx"
+
+def ensure_matting_model():
+    if os.path.exists(MODNET_PATH) and os.path.getsize(MODNET_PATH) > 20_000_000:
+        return True
+    print("Downloading MODNet photographic matting model (~25 MB)...")
+    tmp = MODNET_PATH + '.tmp'
+    try:
+        urllib.request.urlretrieve(MODNET_URL, tmp)
+        if os.path.getsize(tmp) > 20_000_000:
+            os.replace(tmp, MODNET_PATH)
+            print("  MODNet matting model ready")
+            return True
+        else:
+            os.remove(tmp)
+            print("  Downloaded file too small")
+            return False
+    except Exception as e:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+        print(f"  MODNet download failed: {e} (matting refinement disabled)")
+        return False
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LANDMARK INDICES
 # ═══════════════════════════════════════════════════════════════════════════
@@ -293,7 +319,8 @@ DEFAULT_PARAMS = {'jaw': 0, 'cheeks': 0, 'chin': 0, 'face_width': 0,
                   'skin_smooth': 0, 'teeth_whiten': 0, 'eye_sharpen': 0,
                   'skin_tone_even': 0, 'lip_color': 0, 'under_eye': 0,
                   'hair_hue': 0, 'hair_saturation': 0, 'hair_density': 0,
-                  'blush': 0, 'lip_gloss': 0, 'eye_shadow': 0}
+                  'blush': 0, 'lip_gloss': 0, 'eye_shadow': 0,
+                  'matting_refine': 0}
 
 EFFECT_PARAM_KEYS = (
     'jaw', 'cheeks', 'chin', 'face_width', 'forehead', 'nose', 'eye_enlarge',
@@ -302,7 +329,7 @@ EFFECT_PARAM_KEYS = (
     'hair_saturation', 'hair_density', 'blush', 'lip_gloss', 'eye_shadow'
 )
 
-CLI_PARAM_KEYS = EFFECT_PARAM_KEYS + ('smoothing', 'temporal', 'bg_protect')
+CLI_PARAM_KEYS = EFFECT_PARAM_KEYS + ('smoothing', 'temporal', 'bg_protect', 'matting_refine')
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ONE-EURO FILTER
@@ -413,6 +440,66 @@ class FaceParsingEngine:
             k = max(3, feather) | 1
             mask = cv2.GaussianBlur(mask, (k, k), 0)
         return mask
+
+
+class MattingRefinementEngine:
+    """MODNet portrait matting via ONNX Runtime for cleaner ROI edge masks."""
+
+    _INPUT_SIZE = 512
+
+    def __init__(self):
+        if not ensure_matting_model():
+            raise RuntimeError("MODNet matting model unavailable")
+        available = ort.get_available_providers()
+        providers = []
+        if USE_GPU and 'CUDAExecutionProvider' in available:
+            providers.append('CUDAExecutionProvider')
+        if sys.platform.startswith('win') and 'DmlExecutionProvider' in available:
+            providers.append('DmlExecutionProvider')
+        providers.append('CPUExecutionProvider')
+        providers = [p for p in providers if p in available]
+        self.session = ort.InferenceSession(MODNET_PATH, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_names = [o.name for o in self.session.get_outputs()]
+        self._cache = {}
+        print(f"  Matting refinement: MODNet loaded ({providers[0]})")
+
+    def _preprocess(self, rgb):
+        orig_h, orig_w = rgb.shape[:2]
+        if max(orig_h, orig_w) < self._INPUT_SIZE or min(orig_h, orig_w) > self._INPUT_SIZE:
+            if orig_w >= orig_h:
+                new_h = self._INPUT_SIZE
+                new_w = int(orig_w / max(orig_h, 1) * self._INPUT_SIZE)
+            else:
+                new_w = self._INPUT_SIZE
+                new_h = int(orig_h / max(orig_w, 1) * self._INPUT_SIZE)
+        else:
+            new_h, new_w = orig_h, orig_w
+        new_h = max(32, new_h - (new_h % 32))
+        new_w = max(32, new_w - (new_w % 32))
+        resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        x = resized.astype(np.float32) / 255.0
+        x = (x - 0.5) / 0.5
+        x = np.transpose(x, (2, 0, 1))
+        return np.expand_dims(x, axis=0), orig_h, orig_w
+
+    def matte(self, rgb, cache_key=None):
+        h, w = rgb.shape[:2]
+        if cache_key is not None:
+            cached = self._cache.get((h, w, cache_key))
+            if cached is not None:
+                return cached
+        tensor, orig_h, orig_w = self._preprocess(rgb)
+        out = self.session.run(self.output_names, {self.input_name: tensor})[0]
+        matte = np.squeeze(out).astype(np.float32)
+        matte = cv2.resize(matte, (orig_w, orig_h), interpolation=cv2.INTER_AREA)
+        matte = np.clip(matte, 0.0, 1.0)
+        if cache_key is not None:
+            self._cache[(h, w, cache_key)] = matte
+            if len(self._cache) > 8:
+                oldest = next(iter(self._cache))
+                del self._cache[oldest]
+        return matte
 
 
 def apply_skin_smoothing(frame, skin_mask, strength):
@@ -988,6 +1075,7 @@ class FaceWarpEngine:
         self._caches = [{} for _ in range(max_faces)]
         # Face parsing engine (optional, for better masks + skin smooth)
         self.parser = None
+        self.matter = None
         if ensure_parsing_model(self.parser_model):
             try:
                 self.parser = FaceParsingEngine(self.parser_model)
@@ -1606,6 +1694,19 @@ class FaceWarpEngine:
             result = frame.copy()
             result[ry1:ry2, rx1:rx2] = warped_roi
             return result
+
+        matting_refine = params.get('matting_refine', 0)
+        if matting_refine > 0:
+            try:
+                if self.matter is None:
+                    self.matter = MattingRefinementEngine()
+                matte_key = (lms[:10] / 8.0).astype(np.int16).tobytes()
+                matte = self.matter.matte(roi_crop, cache_key=matte_key)
+                strength = min(max(matting_refine / 100.0, 0.0), 1.0)
+                mask_roi = mask_roi * (1.0 - strength) + (mask_roi * matte) * strength
+                mask_roi = np.clip(mask_roi, 0.0, 1.0)
+            except Exception as e:
+                print(f"Matting refinement fallback: {e}")
 
         # 6. Composite via seamless clone
         return self._composite_roi(frame, warped_roi, mask_roi, roi)
@@ -2323,6 +2424,7 @@ class FaceSlimApp(QMainWindow):
         self._make_slider(g2l, 'smoothing', 'Warp Smoothing', default=50, tip='Displacement field smoothness')
         self._make_slider(g2l, 'temporal', 'Temporal Stability', default=50, tip='Landmark jitter reduction (higher=smoother)')
         self._make_slider(g2l, 'bg_protect', 'Background Protection', default=70, tip='Prevents warping background - blends face region only')
+        self._make_slider(g2l, 'matting_refine', 'Matting Refine', default=0, tip='MODNet portrait matte edge refinement for ROI warp masks')
 
         opts_row = QHBoxLayout()
         self.chk_lm = QCheckBox("Landmarks"); self.chk_lm.toggled.connect(self._tog_lm)
@@ -3038,6 +3140,7 @@ Examples:
     parser.add_argument('--smoothing', type=int, help='Warp smoothing (10-100)')
     parser.add_argument('--temporal', type=int, help='Temporal landmark smoothing (0-100)')
     parser.add_argument('--bg-protect', type=int, dest='bg_protect', help='Background protection (0-100)')
+    parser.add_argument('--matting-refine', type=int, dest='matting_refine', help='MODNet mask edge refinement (0-100)')
     parser.add_argument('--faces', type=int, help='Max faces to process (1-5)')
     parser.add_argument('--face-preset', action='append', default=[], metavar='FACE=PRESET',
                         help='Apply a preset to one face index, e.g. 2=Beauty')
