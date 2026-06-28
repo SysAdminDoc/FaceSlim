@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.19.0 - 2026-06-28
+
+- Added accessible names and descriptions across primary GUI controls, sliders, toggles, combo boxes, and export/batch actions.
+- Added explicit tab-order metadata for the main workflow.
+- Added local accessibility QA tests for control metadata and dark-theme contrast ratios.
+
 ## FaceSlim v1.18.0 - 2026-06-28
 
 - Added always-on FaceSlim provenance metadata to image exports.

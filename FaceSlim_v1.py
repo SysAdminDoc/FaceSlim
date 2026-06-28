@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.18.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.19.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -96,7 +96,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.18.0"
+VERSION = "1.19.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RENDER_LOG_PATH = os.path.join(APP_DIR, 'render.log')
 IPTC_DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced"
@@ -2921,6 +2921,58 @@ QFrame#separator { background-color: #45475a; max-height: 1px; }
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN WINDOW
 # ═══════════════════════════════════════════════════════════════════════════
+INTERACTIVE_WIDGET_TYPES = (QPushButton, QSlider, QCheckBox, QComboBox, QSpinBox)
+ACCESSIBILITY_CONTRAST_PAIRS = [
+    ("Primary text on app background", "#cdd6f4", "#1e1e2e", 4.5),
+    ("Muted text on app background", "#bac2de", "#1e1e2e", 4.5),
+    ("Accent text on app background", "#89b4fa", "#1e1e2e", 4.5),
+    ("Primary button text", "#1e1e2e", "#89b4fa", 4.5),
+    ("Success button text", "#1e1e2e", "#a6e3a1", 4.5),
+    ("Danger button text", "#1e1e2e", "#f38ba8", 4.5),
+    ("Secondary button text", "#cdd6f4", "#45475a", 4.5),
+]
+
+
+def _hex_rgb(color):
+    color = color.strip().lstrip("#")
+    return tuple(int(color[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def _relative_luminance(color):
+    def channel(value):
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+    r, g, b = (channel(value) for value in _hex_rgb(color))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(foreground, background):
+    fg = _relative_luminance(foreground)
+    bg = _relative_luminance(background)
+    lighter, darker = max(fg, bg), min(fg, bg)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def accessibility_contrast_report():
+    return [{
+        "name": name,
+        "foreground": foreground,
+        "background": background,
+        "minimum": minimum,
+        "ratio": contrast_ratio(foreground, background),
+    } for name, foreground, background, minimum in ACCESSIBILITY_CONTRAST_PAIRS]
+
+
+def accessibility_audit_window(window):
+    missing = []
+    for widget in window.findChildren(INTERACTIVE_WIDGET_TYPES):
+        label = widget.objectName() or (widget.text() if hasattr(widget, "text") else type(widget).__name__)
+        if not widget.accessibleName().strip():
+            missing.append(f"{type(widget).__name__}:{label}")
+        if not widget.accessibleDescription().strip():
+            missing.append(f"{type(widget).__name__}:{label}:description")
+    return missing
+
+
 class FaceSlimApp(QMainWindow):
     def __init__(self, show_responsible_gate=True):
         super().__init__()
@@ -2949,14 +3001,84 @@ class FaceSlimApp(QMainWindow):
             QTimer.singleShot(0, self._show_responsible_use_gate)
 
     # ── Slider Factory ──────────────────────────────────────────
+    def _set_accessible(self, widget, name, description=None):
+        widget.setAccessibleName(name)
+        widget.setAccessibleDescription(description or name)
+        if description and hasattr(widget, "toolTip") and not widget.toolTip():
+            widget.setToolTip(description)
+        return widget
+
+    def _apply_accessibility_metadata(self):
+        self.setAccessibleName("FaceSlim main window")
+        self.setAccessibleDescription("FaceSlim image and video face reshaping workspace.")
+        self._set_accessible(self.video_label, "Preview canvas",
+                             "Drop media here or review the processed before and after preview.")
+        self._set_accessible(self.timeline_slider, "Video timeline scrubber",
+                             "Seek through the loaded file video in seconds.")
+        self._set_accessible(self.timeline_label, "Timeline position",
+                             "Current video position and duration.")
+        named = [
+            (self.btn_webcam, "Start webcam", "Start live webcam preview."),
+            (self.btn_load, "Load media file", "Open an image or video file."),
+            (self.btn_stop, "Stop preview", "Stop the current webcam or video preview."),
+            (self.btn_undo, "Undo adjustment", "Undo the last parameter change."),
+            (self.btn_redo, "Redo adjustment", "Redo the next parameter change."),
+            (self.btn_cmp, "A/B compare", "Toggle draggable split before and after comparison."),
+            (self.btn_virtualcam, "Virtual camera", "Stream the processed preview to a virtual camera."),
+            (self.combo_parser_model, "Parser model", "Choose the BiSeNet face parsing model."),
+            (self.chk_lm, "Show landmarks", "Overlay detected face landmarks on the preview."),
+            (self.chk_conf, "Show confidence", "Overlay face detection confidence on the preview."),
+            (self.chk_teeth_hint, "Show teeth mask", "Overlay the whitening target mask in preview only."),
+            (self.spin_faces, "Maximum faces", "Choose how many faces FaceSlim should process."),
+            (self.combo_scale, "Preview scale", "Reduce preview resolution for faster playback."),
+            (self.preset_combo, "Custom preset selector", "Choose a saved custom preset."),
+            (self.btn_exp_video, "Export video", "Render the current video with active settings."),
+            (self.btn_exp_cancel, "Cancel export", "Cancel the active video export."),
+            (self.btn_exp_img, "Save screenshot", "Save the current processed preview as a PNG image."),
+            (self.btn_exp_gif, "Export before after GIF", "Export a two-frame before and after GIF."),
+            (self.chk_watermark, "Disclosure watermark", "Add a visible AI modified disclosure badge."),
+            (self.combo_video_compare, "Video export layout", "Choose normal, split, or side-by-side video export."),
+            (self.btn_batch, "Select files for batch", "Choose image or video files for batch processing."),
+            (self.btn_batch_folder, "Process folder", "Process every supported media file in a folder."),
+            (self.btn_batch_manifest, "Run manifest", "Run a JSON batch manifest."),
+            (self.btn_batch_cancel, "Cancel batch", "Cancel the active batch run."),
+        ]
+        for widget, name, description in named:
+            self._set_accessible(widget, name, description)
+        for widget in self.findChildren((QPushButton, QCheckBox)):
+            if not widget.accessibleName().strip():
+                text = widget.text().replace("&", "").strip()
+                if text:
+                    self._set_accessible(widget, text, widget.toolTip() or text)
+        self._apply_tab_order()
+
+    def _apply_tab_order(self):
+        ordered = [
+            self.btn_webcam, self.btn_load, self.btn_stop, self.btn_undo, self.btn_redo,
+            self.btn_cmp, self.btn_virtualcam, self.timeline_slider,
+            *[slider for slider, _label in self.sliders.values()],
+            self.combo_parser_model, self.chk_lm, self.chk_conf, self.chk_teeth_hint,
+            self.spin_faces, self.combo_scale, self.preset_combo,
+            self.btn_exp_video, self.btn_exp_cancel, self.btn_exp_img, self.btn_exp_gif,
+            self.chk_watermark, self.combo_video_compare,
+            self.btn_batch, self.btn_batch_folder, self.btn_batch_manifest, self.btn_batch_cancel,
+        ]
+        for first, second in zip(ordered, ordered[1:]):
+            QWidget.setTabOrder(first, second)
+
     def _make_slider(self, layout, key, label, max_v=100, default=0, tip=""):
         row = QVBoxLayout(); row.setSpacing(2)
-        lr = QHBoxLayout(); lr.addWidget(QLabel(label)); lr.addStretch()
+        lr = QHBoxLayout()
+        name_label = QLabel(label)
+        lr.addWidget(name_label); lr.addStretch()
         vl = QLabel(f"{default}%")
         vl.setStyleSheet("color:#f9e2af; font-size:12px; font-weight:bold; min-width:36px;")
         lr.addWidget(vl); row.addLayout(lr)
         s = QSlider(Qt.Orientation.Horizontal); s.setRange(0, max_v); s.setValue(default)
         if tip: s.setToolTip(tip)
+        name_label.setBuddy(s)
+        self._set_accessible(s, f"{label} slider", tip or f"Adjust {label}.")
+        self._set_accessible(vl, f"{label} value", f"Current {label} slider value.")
         s.valueChanged.connect(lambda v, k=key, lab=vl: self._on_slider(k, v, lab))
         s.sliderReleased.connect(lambda: self.history.push(self._p()))
         row.addWidget(s); layout.addLayout(row)
@@ -3236,6 +3358,7 @@ class FaceSlimApp(QMainWindow):
             f"color: {'#a6e3a1' if USE_GPU else '#f9e2af'}; font-size: 11px; font-weight: bold; "
             f"background-color: {'#1e3a2e' if USE_GPU else '#3a2e1e'}; border-radius: 4px; padding: 2px 8px;")
         self.statusBar().addPermanentWidget(gpu_label)
+        self._apply_accessibility_metadata()
 
     # ── Parameter Management ────────────────────────────────────
     def _push(self):
