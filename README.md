@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.22.0-blue)
+![Version](https://img.shields.io/badge/version-1.23.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -58,6 +58,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | MODNet Matting Refinement | Optional portrait matte edge refinement for ROI warp masks |
 | Background Protection | ROI-isolated warp + seamless clone composite |
 | Runtime Provider Selector | Persisted ONNX Runtime Auto/CPU/CUDA/DirectML override with diagnostics and one-frame benchmark |
+| Model Provenance Inventory | GUI/CLI source, license, hash, cache, provider, and redownload status for every model |
 | Temporal Mask Smoothing | EMA filter prevents parsing mask flicker on video |
 | Optical Flow Propagation | Warp displacement propagation between TPS keyframes |
 | GPU Acceleration | PyTorch TPS warping on CUDA (auto-detected) |
@@ -162,6 +163,10 @@ python FaceSlim_v1.py --input photo.jpg --parser-model bisenet_resnet34 --skin-s
 python FaceSlim_v1.py --input photo.jpg --onnx-provider cpu --skin-smooth 35
 python FaceSlim_v1.py --provider-diagnostics --onnx-provider auto
 
+# Inspect or refresh model artifacts
+python FaceSlim_v1.py --list-models --onnx-provider cpu
+python FaceSlim_v1.py --redownload-model bisenet_resnet18
+
 # Cleaner face/background boundary on strong warps
 python FaceSlim_v1.py --input photo.jpg --jaw 45 --matting-refine 70
 
@@ -214,6 +219,8 @@ python FaceSlim_v1.py --list-presets
 | `--parser-model` | `bisenet_resnet18`, `bisenet_resnet34` | Face parsing model for beauty masks |
 | `--onnx-provider` | `auto`, `cpu`, `cuda`, `directml` | ONNX Runtime provider override |
 | `--provider-diagnostics` | flag | Show available providers, selected/fallback provider, and one-frame benchmark |
+| `--list-models` | flag | Show model source, license, hash, cache, provider, and verification status |
+| `--redownload-model` | model key or `all` | Delete and re-download a model artifact with hash verification |
 | `--list-presets` | flag | List all available presets |
 
 ### Batch Manifest
@@ -278,14 +285,15 @@ Image exports always embed FaceSlim provenance metadata. PNG outputs include XMP
 
 ## Models (Auto-Downloaded)
 
-| Model | Expected size | SHA-256 prefix | Source | Purpose |
-|-------|---------------|---------------|--------|---------|
-| `face_landmarker.task` | 3,758,596 bytes | `64184e229b26` | Google MediaPipe | 478-point face landmarks |
-| `bisenet_face_parsing.onnx` | 53,205,364 bytes | `0d9bd318e469` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Fast 19-class face segmentation (CelebAMask-HQ) |
-| `bisenet_resnet34.onnx` | 93,632,554 bytes | `5b805bba7b56` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing) | Higher-quality 19-class face segmentation (CelebAMask-HQ) |
-| `modnet_photographic.onnx` | 25,969,398 bytes | `5069a5e306b9` | [yakhyo/modnet](https://github.com/yakhyo/modnet) | Optional portrait matte for ROI edge refinement |
+| Model key | File | Expected size | SHA-256 prefix | Source / license | Purpose |
+|-----------|------|---------------|---------------|------------------|---------|
+| `face_landmarker` | `face_landmarker.task` | 3,758,596 bytes | `64184e229b26` | [Google MediaPipe](https://github.com/google-ai-edge/mediapipe), Apache-2.0 | 478-point face landmarks |
+| `bisenet_resnet18` | `bisenet_face_parsing.onnx` | 53,205,364 bytes | `0d9bd318e469` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing), MIT | Fast 19-class face segmentation (CelebAMask-HQ) |
+| `bisenet_resnet34` | `bisenet_resnet34.onnx` | 93,632,554 bytes | `5b805bba7b56` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing), MIT | Higher-quality 19-class face segmentation (CelebAMask-HQ) |
+| `modnet_photographic` | `modnet_photographic.onnx` | 25,969,398 bytes | `5069a5e306b9` | [yakhyo/modnet](https://github.com/yakhyo/modnet), Apache-2.0 | Optional portrait matte for ROI edge refinement |
 
-The face landmarker and selected parser model are downloaded automatically on first use. Each cached or downloaded model must match the versioned in-app manifest by exact byte size and SHA-256 before it is used; corrupt caches are deleted and downloaded again through an atomic temporary file. MODNet downloads only when matting refinement is enabled. If the selected BiSeNet model fails to download or verify, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
+The face landmarker and selected parser model are downloaded automatically on first use. Each cached or downloaded model must match the versioned in-app manifest by exact byte size and SHA-256 before it is used; corrupt caches are deleted and downloaded again through an atomic temporary file. Source-tree runs use model files beside `FaceSlim_v1.py`; packaged Windows builds cache models in `%APPDATA%\.faceslim\models` so downloads persist across launches. MODNet downloads only when matting refinement is enabled. If the selected BiSeNet model fails to download or verify, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
+Use the GUI model inventory controls or `--list-models` to inspect each model's source URL, license URL, cache path, active provider, and verification status. Use `--redownload-model <key>` or the GUI redownload action to refresh an artifact.
 
 ## Requirements
 

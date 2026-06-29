@@ -64,6 +64,42 @@ class ModelManifestTests(unittest.TestCase):
             self.assertIn("sha256", reason)
 
 
+class ModelInventoryTests(unittest.TestCase):
+    def test_model_paths_use_configured_model_directory(self):
+        self.assertEqual(
+            Path(faceslim.MODEL_PATH).parent,
+            Path(faceslim.MODEL_DIR),
+        )
+        self.assertEqual(
+            Path(faceslim.parser_model_path("bisenet_resnet34")).parent,
+            Path(faceslim.MODEL_DIR),
+        )
+
+    def test_model_inventory_includes_source_license_hash_and_provider(self):
+        inventory = {item["key"]: item for item in faceslim.model_inventory("cpu")}
+
+        self.assertIn("face_landmarker", inventory)
+        self.assertEqual(inventory["face_landmarker"]["license"], "Apache-2.0")
+        self.assertIn("mediapipe", inventory["face_landmarker"]["source_url"])
+        self.assertEqual(inventory["bisenet_resnet18"]["license"], "MIT")
+        self.assertEqual(inventory["bisenet_resnet18"]["provider"], "CPUExecutionProvider")
+        self.assertIn("sha256", inventory["modnet_photographic"])
+
+    def test_list_models_cli_exits_without_landmark_startup(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "FaceSlim_v1.py"), "--list-models", "--onnx-provider", "cpu"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Model Inventory", result.stdout)
+        self.assertIn("Apache-2.0", result.stdout)
+        self.assertIn("CPUExecutionProvider", result.stdout)
+
+
 class RuntimeProviderTests(unittest.TestCase):
     def test_provider_override_falls_back_to_cpu_when_unavailable(self):
         resolution = faceslim.resolve_onnx_providers(

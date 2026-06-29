@@ -1,5 +1,12 @@
 # Changelog
 
+## FaceSlim v1.23.0 - 2026-06-29
+
+- Added model source, license, cache path, hash verification, and active-provider inventory for every downloaded model.
+- Added GUI model inventory refresh/redownload controls and CLI `--list-models` / `--redownload-model`.
+- Persisted packaged-build model downloads under `%APPDATA%\.faceslim\models` instead of PyInstaller's temporary extraction directory.
+- Documented upstream model sources and licenses in the README model table.
+
 ## FaceSlim v1.22.0 - 2026-06-29
 
 - Added `requirements-upgrade-canary.txt` for a Python 3.12+ dependency upgrade lane.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.22.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.23.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -96,13 +96,15 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.22.0"
+VERSION = "1.23.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-RENDER_LOG_PATH = os.path.join(APP_DIR, 'render.log')
-IPTC_DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced"
 CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), '.faceslim')
 PRESETS_DIR = os.path.join(CONFIG_DIR, 'presets')
+MODEL_DIR = os.path.join(CONFIG_DIR, 'models') if getattr(sys, "frozen", False) else APP_DIR
+RENDER_LOG_PATH = os.path.join(APP_DIR, 'render.log')
+IPTC_DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced"
 os.makedirs(PRESETS_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
@@ -148,16 +150,22 @@ MODEL_MANIFEST_VERSION = 1
 LANDMARK_MODEL = {
     "key": "face_landmarker",
     "label": "MediaPipe Face Landmarker",
+    "kind": "landmark",
     "filename": "face_landmarker.task",
     "url": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+    "source": "Google MediaPipe",
+    "source_url": "https://github.com/google-ai-edge/mediapipe",
+    "license": "Apache-2.0",
+    "license_url": "https://github.com/google-ai-edge/mediapipe/blob/master/LICENSE",
     "size_bytes": 3_758_596,
     "sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
 }
-MODEL_PATH = os.path.join(APP_DIR, LANDMARK_MODEL["filename"])
 MODEL_URL = LANDMARK_MODEL["url"]
 
 def _model_path(cfg):
-    return os.path.join(APP_DIR, cfg["filename"])
+    return os.path.join(MODEL_DIR, cfg["filename"])
+
+MODEL_PATH = _model_path(LANDMARK_MODEL)
 
 def _format_size(size_bytes):
     return f"{size_bytes / (1024 * 1024):.1f} MB"
@@ -201,6 +209,7 @@ def _download_verified_model(cfg, optional_failure_note=None):
     tmp_path = f"{path}.download-{os.getpid()}.tmp"
     print(f"Downloading {cfg['label']} ({_format_size(cfg['size_bytes'])})...")
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         _remove_quietly(tmp_path)
         urllib.request.urlretrieve(cfg["url"], tmp_path)
         ok, reason = validate_model_artifact(tmp_path, cfg)
@@ -225,22 +234,32 @@ PARSER_MODELS = {
     "bisenet_resnet18": {
         "key": "bisenet_resnet18",
         "label": "BiSeNet ResNet18 (fast)",
+        "kind": "parser",
         "filename": "bisenet_face_parsing.onnx",
         "url": "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.onnx",
+        "source": "yakhyo/face-parsing",
+        "source_url": "https://github.com/yakhyo/face-parsing",
+        "license": "MIT",
+        "license_url": "https://github.com/yakhyo/face-parsing/blob/main/LICENSE",
         "size_bytes": 53_205_364,
         "sha256": "0d9bd318e46987c3bdbfacae9e2c0f461cae1c6ac6ea6d43bbe541a91727e33f",
     },
     "bisenet_resnet34": {
         "key": "bisenet_resnet34",
         "label": "BiSeNet ResNet34 (quality)",
+        "kind": "parser",
         "filename": "bisenet_resnet34.onnx",
         "url": "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet34.onnx",
+        "source": "yakhyo/face-parsing",
+        "source_url": "https://github.com/yakhyo/face-parsing",
+        "license": "MIT",
+        "license_url": "https://github.com/yakhyo/face-parsing/blob/main/LICENSE",
         "size_bytes": 93_632_554,
         "sha256": "5b805bba7b5660ab7070b5a381dcf75e5b3e04199f1e9387232a77a00095102e",
     },
 }
 DEFAULT_PARSER_MODEL = "bisenet_resnet18"
-BISENET_PATH = os.path.join(APP_DIR, PARSER_MODELS[DEFAULT_PARSER_MODEL]["filename"])
+BISENET_PATH = _model_path(PARSER_MODELS[DEFAULT_PARSER_MODEL])
 BISENET_URL = PARSER_MODELS[DEFAULT_PARSER_MODEL]["url"]
 # CelebAMask-HQ label indices
 PARSE_BACKGROUND = 0
@@ -280,7 +299,7 @@ def parser_model_label(model_key=None):
     return PARSER_MODELS[parser_model_key(model_key)]["label"]
 
 def parser_model_path(model_key=None):
-    return os.path.join(APP_DIR, PARSER_MODELS[parser_model_key(model_key)]["filename"])
+    return _model_path(PARSER_MODELS[parser_model_key(model_key)])
 
 def parser_model_ready(model_key=None):
     cfg = PARSER_MODELS[parser_model_key(model_key)]
@@ -305,8 +324,13 @@ def ensure_parsing_model(model_key=None):
 MATTE_MODEL = {
     "key": "modnet_photographic",
     "label": "MODNet Photographic Matting",
+    "kind": "matting",
     "filename": "modnet_photographic.onnx",
     "url": "https://github.com/yakhyo/modnet/releases/download/weights/modnet_photographic.onnx",
+    "source": "yakhyo/modnet",
+    "source_url": "https://github.com/yakhyo/modnet",
+    "license": "Apache-2.0",
+    "license_url": "https://github.com/yakhyo/modnet/blob/main/LICENSE",
     "size_bytes": 25_969_398,
     "sha256": "5069a5e306b9f5e9f4f2b0360264c9f8ea13b257c7c39943c7cf6a2ec3a102ae",
 }
@@ -505,6 +529,88 @@ def provider_diagnostics_text(provider_preference=None, parser_model=None,
                               run_benchmark=False, ensure_parser=False):
     return "\n".join(provider_diagnostics_lines(
         provider_preference, parser_model, run_benchmark, ensure_parser))
+
+
+def all_model_configs():
+    return [LANDMARK_MODEL] + [PARSER_MODELS[key] for key in sorted(PARSER_MODELS)] + [MATTE_MODEL]
+
+
+def model_config_by_key(model_key):
+    key = str(model_key or "").strip()
+    for cfg in all_model_configs():
+        if cfg["key"] == key:
+            return cfg
+    raise KeyError(f"Unknown model: {model_key}")
+
+
+def model_runtime_provider(cfg, provider_preference=None):
+    if cfg.get("kind") == "landmark":
+        return "MediaPipe Tasks / TFLite"
+    return resolve_onnx_providers(provider_preference)["selected_provider"] or "unavailable"
+
+
+def model_inventory(provider_preference=None):
+    items = []
+    for cfg in all_model_configs():
+        path = _model_path(cfg)
+        verified, reason = validate_model_artifact(path, cfg)
+        if verified:
+            status = "verified"
+        elif reason == "missing":
+            status = "downloadable"
+        else:
+            status = f"invalid ({reason})"
+        items.append({
+            "key": cfg["key"],
+            "label": cfg["label"],
+            "kind": cfg.get("kind", "model"),
+            "filename": cfg["filename"],
+            "source": cfg["source"],
+            "source_url": cfg["source_url"],
+            "download_url": cfg["url"],
+            "license": cfg["license"],
+            "license_url": cfg["license_url"],
+            "expected_size": cfg["size_bytes"],
+            "sha256": cfg["sha256"],
+            "cache_path": path,
+            "status": status,
+            "verified": verified,
+            "provider": model_runtime_provider(cfg, provider_preference),
+        })
+    return items
+
+
+def model_inventory_lines(provider_preference=None):
+    lines = []
+    for item in model_inventory(provider_preference):
+        lines.append(
+            f"{item['label']} [{item['key']}]\n"
+            f"  status: {item['status']} | provider: {item['provider']}\n"
+            f"  source: {item['source']} ({item['source_url']})\n"
+            f"  license: {item['license']} ({item['license_url']})\n"
+            f"  expected: {item['expected_size']} bytes | sha256: {item['sha256'][:12]}...\n"
+            f"  cache: {item['cache_path']}\n"
+            f"  download: {item['download_url']}"
+        )
+    return lines
+
+
+def model_inventory_text(provider_preference=None):
+    return "\n\n".join(model_inventory_lines(provider_preference))
+
+
+def redownload_model(model_key):
+    cfg = model_config_by_key(model_key)
+    _remove_quietly(_model_path(cfg))
+    return _download_verified_model(cfg)
+
+
+def redownload_models(model_key="all"):
+    keys = [cfg["key"] for cfg in all_model_configs()] if model_key == "all" else [model_key]
+    results = {}
+    for key in keys:
+        results[key] = redownload_model(key)
+    return results
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LANDMARK INDICES
@@ -3477,6 +3583,26 @@ class ProviderDiagnosticsThread(QThread):
             self.error.emit(str(e))
 
 
+class ModelRedownloadThread(QThread):
+    download_finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, model_key):
+        super().__init__()
+        self.model_key = model_key
+
+    def run(self):
+        try:
+            results = redownload_models(self.model_key)
+            failed = [key for key, ok in results.items() if not ok]
+            if failed:
+                self.error.emit("Failed to download: " + ", ".join(failed))
+            else:
+                self.download_finished.emit("Downloaded: " + ", ".join(results.keys()))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class FaceSlimApp(QMainWindow):
     def __init__(self, show_responsible_gate=True):
         super().__init__()
@@ -3500,6 +3626,7 @@ class FaceSlimApp(QMainWindow):
         self._image_engine_parser = DEFAULT_PARSER_MODEL
         self._image_engine_provider = DEFAULT_ONNX_PROVIDER
         self._provider_diag_thread = None
+        self._model_redownload_thread = None
         self._build_ui()
         self._load_settings()
         self.history.push(self._p())
@@ -3534,6 +3661,9 @@ class FaceSlimApp(QMainWindow):
             (self.combo_parser_model, "Parser model", "Choose the BiSeNet face parsing model."),
             (self.combo_onnx_provider, "ONNX runtime provider", "Choose automatic, CPU, CUDA, or DirectML ONNX inference."),
             (self.btn_provider_bench, "Benchmark ONNX provider", "Run a one-frame ONNX provider benchmark."),
+            (self.combo_model_redownload, "Model redownload selector", "Choose one model or all models for redownload."),
+            (self.btn_model_refresh, "Refresh model inventory", "Refresh model verification, source, license, and cache status."),
+            (self.btn_model_redownload, "Redownload model", "Redownload the selected model artifact and verify its hash."),
             (self.chk_lm, "Show landmarks", "Overlay detected face landmarks on the preview."),
             (self.chk_conf, "Show confidence", "Overlay face detection confidence on the preview."),
             (self.chk_teeth_hint, "Show teeth mask", "Overlay the whitening target mask in preview only."),
@@ -3566,6 +3696,7 @@ class FaceSlimApp(QMainWindow):
             self.btn_cmp, self.btn_virtualcam, self.timeline_slider,
             *[slider for slider, _label in self.sliders.values()],
             self.combo_parser_model, self.combo_onnx_provider, self.btn_provider_bench,
+            self.combo_model_redownload, self.btn_model_refresh, self.btn_model_redownload,
             self.chk_lm, self.chk_conf, self.chk_teeth_hint,
             self.spin_faces, self.combo_scale, self.preset_combo,
             self.btn_exp_video, self.btn_exp_cancel, self.btn_exp_img, self.btn_exp_gif,
@@ -3752,6 +3883,25 @@ class FaceSlimApp(QMainWindow):
         self.provider_lbl.setWordWrap(True)
         self.provider_lbl.setStyleSheet("color:#bac2de; font-size:10px;")
         g_bl.addWidget(self.provider_lbl)
+        model_row = QHBoxLayout()
+        self.combo_model_redownload = QComboBox()
+        self.combo_model_redownload.addItem("All models", "all")
+        for cfg in all_model_configs():
+            self.combo_model_redownload.addItem(cfg["label"], cfg["key"])
+        model_row.addWidget(self.combo_model_redownload)
+        self.btn_model_refresh = QPushButton("Refresh Models")
+        self.btn_model_refresh.setProperty("secondary", True)
+        self.btn_model_refresh.clicked.connect(self._set_model_inventory_status)
+        model_row.addWidget(self.btn_model_refresh)
+        self.btn_model_redownload = QPushButton("Redownload")
+        self.btn_model_redownload.setProperty("secondary", True)
+        self.btn_model_redownload.clicked.connect(self._redownload_selected_model)
+        model_row.addWidget(self.btn_model_redownload)
+        g_bl.addLayout(model_row)
+        self.model_inventory_lbl = QLabel("")
+        self.model_inventory_lbl.setWordWrap(True)
+        self.model_inventory_lbl.setStyleSheet("color:#bac2de; font-size:10px;")
+        g_bl.addWidget(self.model_inventory_lbl)
         t1.addWidget(g_beauty)
 
         g2 = QGroupBox("Quality"); g2l = QVBoxLayout(g2); g2l.setSpacing(6)
@@ -4049,6 +4199,11 @@ class FaceSlimApp(QMainWindow):
                 self._onnx_provider_key(), self._parser_model_key(),
                 run_benchmark=False, ensure_parser=False)
         self.provider_lbl.setText(text)
+        self._set_model_inventory_status()
+
+    def _set_model_inventory_status(self):
+        if hasattr(self, "model_inventory_lbl"):
+            self.model_inventory_lbl.setText(model_inventory_text(self._onnx_provider_key()))
 
     def _on_parser_model_changed(self, _idx):
         self._set_parser_model_status()
@@ -4095,6 +4250,29 @@ class FaceSlimApp(QMainWindow):
         self.btn_provider_bench.setEnabled(True)
         self._set_provider_status(f"Provider benchmark failed: {message}")
         self.toast.show_message("Provider benchmark failed", 4000)
+
+    def _redownload_selected_model(self):
+        if self._model_redownload_thread and self._model_redownload_thread.isRunning():
+            return
+        key = self.combo_model_redownload.currentData()
+        self.btn_model_redownload.setEnabled(False)
+        self.model_inventory_lbl.setText(f"Downloading {key}...")
+        self._model_redownload_thread = ModelRedownloadThread(key)
+        self._model_redownload_thread.download_finished.connect(self._on_model_redownload_done)
+        self._model_redownload_thread.error.connect(self._on_model_redownload_error)
+        self._model_redownload_thread.start()
+
+    def _on_model_redownload_done(self, message):
+        self.btn_model_redownload.setEnabled(True)
+        self._set_model_inventory_status()
+        self.statusBar().showMessage(message)
+        self.toast.show_message("Model download complete")
+
+    def _on_model_redownload_error(self, message):
+        self.btn_model_redownload.setEnabled(True)
+        self._set_model_inventory_status()
+        self.statusBar().showMessage(f"Model download failed: {message}")
+        self.toast.show_message("Model download failed", 5000)
 
     # ── Preset Management ───────────────────────────────────────
     def _refresh_presets(self):
@@ -4716,6 +4894,10 @@ Examples:
                         help='ONNX Runtime provider override (default: saved setting or auto)')
     parser.add_argument('--provider-diagnostics', action='store_true',
                         help='Show ONNX provider availability, fallback, and one-frame benchmark')
+    parser.add_argument('--list-models', action='store_true',
+                        help='List model source, license, verification, provider, and cache status')
+    parser.add_argument('--redownload-model', choices=["all"] + [cfg["key"] for cfg in all_model_configs()],
+                        help='Delete and re-download one model artifact, or all model artifacts')
     parser.add_argument('--list-presets', action='store_true', help='List available presets')
 
     args = parser.parse_args()
@@ -4735,6 +4917,21 @@ Examples:
             for name, vals in custom.items():
                 desc = ', '.join(f"{k}={v}" for k, v in vals.items() if v > 0)
                 print(f"  {name:15s} {desc}")
+        sys.exit(0)
+
+    if args.list_models:
+        print(f"\nFaceSlim v{VERSION} - Model Inventory\n")
+        print(model_inventory_text(args.onnx_provider))
+        sys.exit(0)
+
+    if args.redownload_model:
+        print(f"\nFaceSlim v{VERSION} - Model Redownload\n")
+        results = redownload_models(args.redownload_model)
+        for key, ok in results.items():
+            print(f"  {key}: {'OK' if ok else 'FAILED'}")
+        print("\n" + model_inventory_text(args.onnx_provider))
+        if not all(results.values()):
+            sys.exit(1)
         sys.exit(0)
 
     if args.provider_diagnostics:
