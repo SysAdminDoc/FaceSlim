@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.23.0-blue)
+![Version](https://img.shields.io/badge/version-1.24.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -73,6 +73,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Batch Manifest | JSON jobs with per-file preset, face overrides, output, watermark, and compare settings |
 | Batch Queue Dialog | Per-file status, progress, ETA, and single-job cancellation |
 | Large-Media Preflight | Checks resolution, frame count, estimates, disk space, output writability, and MP4 codec support before long renders |
+| Optional Restore/Upscale Post-Stage | GFPGAN face restoration and Real-ESRGAN 2x upscale with identity fidelity, strength, tiling, and compare/export parity |
 | CLI Mode | Headless with presets and per-param control |
 | Docker CLI Image | Headless container build for farm rendering |
 | Compatibility Upgrade Lane | Local Python 3.12+ dependency canary with current PyPI comparison |
@@ -170,6 +171,10 @@ python FaceSlim_v1.py --redownload-model bisenet_resnet18
 # Cleaner face/background boundary on strong warps
 python FaceSlim_v1.py --input photo.jpg --jaw 45 --matting-refine 70
 
+# Optional face restoration and 2x upscale post-stage
+python FaceSlim_v1.py --input photo.jpg --post-stage gfpgan_1.4 --post-strength 60 --post-fidelity 80
+python FaceSlim_v1.py --input photo.jpg --post-stage gfpgan_1.4_real_esrgan_x2 --post-tile 512
+
 # Blendshape-guided expression softening
 python FaceSlim_v1.py --input photo.jpg --expression-neutralize 65
 
@@ -209,6 +214,10 @@ python FaceSlim_v1.py --list-presets
 | `--temporal` | 0-100 | Temporal landmark smoothing |
 | `--bg-protect` | 0-100 | Background protection |
 | `--matting-refine` | 0-100 | MODNet mask edge refinement |
+| `--post-stage` | `off`, `gfpgan_1.4`, `real_esrgan_x2`, `gfpgan_1.4_real_esrgan_x2` | Optional post-stage face restoration/upscale model |
+| `--post-strength` | 0-100 | Blend amount for the post-stage |
+| `--post-fidelity` | 0-100 | Identity-preserving blend control; higher keeps more original face detail |
+| `--post-tile` | pixels | Real-ESRGAN tile size for large images/video frames |
 | `--faces` | 1-5 | Max faces to process |
 | `--face-preset` | `FACE=PRESET` | Apply a preset to one face index |
 | `--face-param` | `FACE:key=value` | Override one parameter for one face index |
@@ -291,9 +300,11 @@ Image exports always embed FaceSlim provenance metadata. PNG outputs include XMP
 | `bisenet_resnet18` | `bisenet_face_parsing.onnx` | 53,205,364 bytes | `0d9bd318e469` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing), MIT | Fast 19-class face segmentation (CelebAMask-HQ) |
 | `bisenet_resnet34` | `bisenet_resnet34.onnx` | 93,632,554 bytes | `5b805bba7b56` | [yakhyo/face-parsing](https://github.com/yakhyo/face-parsing), MIT | Higher-quality 19-class face segmentation (CelebAMask-HQ) |
 | `modnet_photographic` | `modnet_photographic.onnx` | 25,969,398 bytes | `5069a5e306b9` | [yakhyo/modnet](https://github.com/yakhyo/modnet), Apache-2.0 | Optional portrait matte for ROI edge refinement |
+| `gfpgan_1.4` | `gfpgan_1.4.onnx` | 340,299,087 bytes | `accc4757b26b` | [TencentARC/GFPGAN](https://github.com/TencentARC/GFPGAN), Apache-2.0 | Optional face restoration post-stage |
+| `real_esrgan_x2` | `real_esrgan_x2.onnx` | 69,552,244 bytes | `5be2d62ab3b0` | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), BSD-3-Clause | Optional 2x upscale post-stage |
 
 The face landmarker and selected parser model are downloaded automatically on first use. Each cached or downloaded model must match the versioned in-app manifest by exact byte size and SHA-256 before it is used; corrupt caches are deleted and downloaded again through an atomic temporary file. Source-tree runs use model files beside `FaceSlim_v1.py`; packaged Windows builds cache models in `%APPDATA%\.faceslim\models` so downloads persist across launches. MODNet downloads only when matting refinement is enabled. If the selected BiSeNet model fails to download or verify, the app falls back to landmark-based polygon masking (reshaping still works, AI beauty effects are disabled).
-Use the GUI model inventory controls or `--list-models` to inspect each model's source URL, license URL, cache path, active provider, and verification status. Use `--redownload-model <key>` or the GUI redownload action to refresh an artifact.
+GFPGAN and Real-ESRGAN download only when the optional post-stage is enabled or explicitly redownloaded. GFPGAN is blended through face masks with the Identity Fidelity control to reduce identity drift; Real-ESRGAN runs tiled inference for large frames and can double the final image/video dimensions. Use the GUI model inventory controls or `--list-models` to inspect each model's source URL, license URL, cache path, active provider, and verification status. Use `--redownload-model <key>` or the GUI redownload action to refresh an artifact.
 
 ## Requirements
 

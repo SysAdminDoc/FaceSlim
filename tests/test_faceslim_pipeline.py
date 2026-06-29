@@ -84,6 +84,8 @@ class ModelInventoryTests(unittest.TestCase):
         self.assertEqual(inventory["bisenet_resnet18"]["license"], "MIT")
         self.assertEqual(inventory["bisenet_resnet18"]["provider"], "CPUExecutionProvider")
         self.assertIn("sha256", inventory["modnet_photographic"])
+        self.assertEqual(inventory["gfpgan_1.4"]["license"], "Apache-2.0")
+        self.assertEqual(inventory["real_esrgan_x2"]["license"], "BSD-3-Clause")
 
     def test_list_models_cli_exits_without_landmark_startup(self):
         result = subprocess.run(
@@ -136,6 +138,35 @@ class RuntimeProviderTests(unittest.TestCase):
         self.assertIn("Matting", text)
 
 
+class PostStageTests(unittest.TestCase):
+    def test_post_stage_output_dimensions_and_compare_resize(self):
+        params = {"post_stage_model": faceslim.POST_STAGE_REALESRGAN}
+        self.assertEqual(faceslim.post_stage_output_dimensions(320, 240, params), (640, 480))
+        self.assertEqual(faceslim.video_output_size(320, 240, "side_by_side", params), (1280, 480))
+
+        original = np.zeros((4, 4, 3), dtype=np.uint8)
+        processed = np.full((8, 8, 3), 255, dtype=np.uint8)
+        compared = faceslim.compose_compare_frame(original, processed, "split")
+
+        self.assertEqual(compared.shape, processed.shape)
+
+    def test_tiled_upscale_covers_last_row_and_column(self):
+        class FakeUpscaler(faceslim.UpscalePostStage):
+            def __init__(self):
+                pass
+
+            def _run_tile(self, tile_rgb):
+                return np.repeat(np.repeat(tile_rgb, 2, axis=0), 2, axis=1)
+
+        image = np.zeros((130, 131, 3), dtype=np.uint8)
+        image[-1, -1] = [10, 20, 30]
+
+        upscaled = FakeUpscaler().upscale(image, tile_size=128)
+
+        self.assertEqual(upscaled.shape, (260, 262, 3))
+        self.assertTrue(np.all(upscaled[-1, -1] == [10, 20, 30]))
+
+
 class CliAndManifestTests(unittest.TestCase):
     def test_list_presets_cli_exits_without_model_download(self):
         result = subprocess.run(
@@ -159,11 +190,13 @@ class CliAndManifestTests(unittest.TestCase):
                     "preset": "Beauty",
                     "parser_model": "bisenet_resnet34",
                     "onnx_provider": "cpu",
+                    "post_stage_model": faceslim.POST_STAGE_GFPGAN,
                     "faces": 3,
                     "watermark": True,
                     "files": [{
                         "input": "input.jpg",
                         "output": "out/result.png",
+                        "post_stage_model": faceslim.POST_STAGE_GFPGAN_REALESRGAN,
                         "params": {"jaw": 22},
                         "face_params": {"2": {"cheeks": 18}},
                     }],
@@ -178,6 +211,7 @@ class CliAndManifestTests(unittest.TestCase):
             self.assertTrue(jobs[0]["watermark"])
             self.assertEqual(jobs[0]["parser_model"], "bisenet_resnet34")
             self.assertEqual(jobs[0]["onnx_provider"], "cpu")
+            self.assertEqual(jobs[0]["params"]["post_stage_model"], faceslim.POST_STAGE_GFPGAN_REALESRGAN)
             self.assertEqual(jobs[0]["params"]["jaw"], 22)
             self.assertEqual(jobs[0]["params"]["face_params"][1]["cheeks"], 18)
             self.assertTrue(jobs[0]["input"].endswith("input.jpg"))

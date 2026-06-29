@@ -21,6 +21,8 @@ face_landmarker.task
 bisenet_*.onnx
 bisenet_face_parsing.onnx
 modnet_*.onnx
+gfpgan_*.onnx
+real_esrgan_*.onnx
 *.tmp
 crash.log
 render.log

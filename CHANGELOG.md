@@ -1,5 +1,12 @@
 # Changelog
 
+## FaceSlim v1.24.0 - 2026-06-29
+
+- Added an optional post-stage model lane for GFPGAN face restoration and Real-ESRGAN 2x upscale, defaulting to off.
+- Added GUI and CLI controls for post-stage model selection, strength, identity fidelity, and upscale tile size.
+- Routed post-stage processing through image, video, batch, and CLI exports with split/side-by-side comparison support and 2x output sizing.
+- Added GFPGAN and Real-ESRGAN provenance, license, hash, cache, and provider reporting to the model inventory.
+
 ## FaceSlim v1.23.0 - 2026-06-29
 
 - Added model source, license, cache path, hash verification, and active-provider inventory for every downloaded model.

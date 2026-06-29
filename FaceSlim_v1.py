@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.23.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.24.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -96,7 +96,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.23.0"
+VERSION = "1.24.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), '.faceslim')
 PRESETS_DIR = os.path.join(CONFIG_DIR, 'presets')
@@ -344,6 +344,50 @@ def ensure_matting_model():
     return False
 
 
+RESTORATION_MODELS = {
+    "gfpgan_1.4": {
+        "key": "gfpgan_1.4",
+        "label": "GFPGAN 1.4 Face Restoration",
+        "kind": "face_restoration",
+        "filename": "gfpgan_1.4.onnx",
+        "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/gfpgan_1.4.onnx",
+        "source": "TencentARC/GFPGAN via FaceFusion assets",
+        "source_url": "https://github.com/TencentARC/GFPGAN",
+        "license": "Apache-2.0",
+        "license_url": "https://github.com/TencentARC/GFPGAN/blob/master/LICENSE",
+        "size_bytes": 340_299_087,
+        "sha256": "accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385",
+    },
+    "real_esrgan_x2": {
+        "key": "real_esrgan_x2",
+        "label": "Real-ESRGAN 2x Upscale",
+        "kind": "upscale",
+        "filename": "real_esrgan_x2.onnx",
+        "url": "https://huggingface.co/facefusion/models-3.0.0/resolve/main/real_esrgan_x2.onnx",
+        "source": "xinntao/Real-ESRGAN via FaceFusion assets",
+        "source_url": "https://github.com/xinntao/Real-ESRGAN",
+        "license": "BSD-3-Clause",
+        "license_url": "https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE",
+        "size_bytes": 69_552_244,
+        "sha256": "5be2d62ab3b0357986efb20a19638334c0e7a2a055ccbc52c77063da0482b3bb",
+    },
+}
+
+POST_STAGE_OFF = "off"
+POST_STAGE_GFPGAN = "gfpgan_1.4"
+POST_STAGE_REALESRGAN = "real_esrgan_x2"
+POST_STAGE_GFPGAN_REALESRGAN = "gfpgan_1.4_real_esrgan_x2"
+POST_STAGE_OPTIONS = {
+    POST_STAGE_OFF: {"label": "Off", "models": ()},
+    POST_STAGE_GFPGAN: {"label": "GFPGAN face restore", "models": ("gfpgan_1.4",)},
+    POST_STAGE_REALESRGAN: {"label": "Real-ESRGAN 2x", "models": ("real_esrgan_x2",)},
+    POST_STAGE_GFPGAN_REALESRGAN: {
+        "label": "GFPGAN + Real-ESRGAN 2x",
+        "models": ("gfpgan_1.4", "real_esrgan_x2"),
+    },
+}
+
+
 ONNX_PROVIDER_OPTIONS = {
     "auto": {"label": "Auto", "provider": None},
     "cpu": {"label": "CPU", "provider": "CPUExecutionProvider"},
@@ -532,7 +576,12 @@ def provider_diagnostics_text(provider_preference=None, parser_model=None,
 
 
 def all_model_configs():
-    return [LANDMARK_MODEL] + [PARSER_MODELS[key] for key in sorted(PARSER_MODELS)] + [MATTE_MODEL]
+    return (
+        [LANDMARK_MODEL]
+        + [PARSER_MODELS[key] for key in sorted(PARSER_MODELS)]
+        + [MATTE_MODEL]
+        + [RESTORATION_MODELS[key] for key in sorted(RESTORATION_MODELS)]
+    )
 
 
 def model_config_by_key(model_key):
@@ -679,7 +728,11 @@ DEFAULT_PARAMS = {'jaw': 0, 'cheeks': 0, 'chin': 0, 'face_width': 0,
                   'hair_hue': 0, 'hair_saturation': 0, 'hair_density': 0,
                   'blush': 0, 'lip_gloss': 0, 'eye_shadow': 0,
                   'expression_neutralize': 0,
-                  'matting_refine': 0}
+                  'matting_refine': 0,
+                  'post_stage_model': POST_STAGE_OFF,
+                  'post_stage_strength': 50,
+                  'post_stage_fidelity': 70,
+                  'post_stage_tile': 512}
 
 EFFECT_PARAM_KEYS = (
     'jaw', 'cheeks', 'chin', 'face_width', 'forehead', 'nose', 'eye_enlarge',
@@ -689,7 +742,33 @@ EFFECT_PARAM_KEYS = (
     'expression_neutralize'
 )
 
-CLI_PARAM_KEYS = EFFECT_PARAM_KEYS + ('smoothing', 'temporal', 'bg_protect', 'matting_refine')
+POST_STAGE_PARAM_KEYS = ('post_stage_strength', 'post_stage_fidelity', 'post_stage_tile')
+CLI_PARAM_KEYS = EFFECT_PARAM_KEYS + ('smoothing', 'temporal', 'bg_protect', 'matting_refine') + POST_STAGE_PARAM_KEYS
+
+
+def post_stage_model_key(value=None):
+    key = str(value or POST_STAGE_OFF).strip()
+    return key if key in POST_STAGE_OPTIONS else POST_STAGE_OFF
+
+
+def post_stage_model_label(value=None):
+    return POST_STAGE_OPTIONS[post_stage_model_key(value)]["label"]
+
+
+def post_stage_model_keys(value=None):
+    return POST_STAGE_OPTIONS[post_stage_model_key(value)]["models"]
+
+
+def post_stage_enabled(params):
+    return post_stage_model_key((params or {}).get("post_stage_model")) != POST_STAGE_OFF
+
+
+def post_stage_upscale_factor(params):
+    return 2 if "real_esrgan_x2" in post_stage_model_keys((params or {}).get("post_stage_model")) else 1
+
+
+def has_effective_processing(params):
+    return any(abs((params or {}).get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS) or post_stage_enabled(params)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ONE-EURO FILTER
@@ -858,10 +937,130 @@ class MattingRefinementEngine:
         return matte
 
 
+def ensure_restoration_model(model_key):
+    cfg = RESTORATION_MODELS[model_key]
+    return _download_verified_model(cfg, f"{cfg['label']} post-stage disabled")
+
+
+def _onnx_output_to_rgb(output):
+    arr = np.asarray(output)
+    if arr.ndim == 4:
+        arr = arr[0]
+    if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
+        arr = np.transpose(arr[:3], (1, 2, 0))
+    arr = arr.astype(np.float32)
+    if arr.size == 0:
+        return None
+    if arr.min() < -0.05:
+        arr = (arr + 1.0) * 127.5
+    elif arr.max() <= 2.0:
+        arr = arr * 255.0
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+class FaceRestorationPostStage:
+    """GFPGAN ONNX face restoration for detected face ROIs."""
+
+    _INPUT_SIZE = 512
+
+    def __init__(self, onnx_provider=None):
+        self.onnx_provider = onnx_provider_key(onnx_provider)
+        if not ensure_restoration_model("gfpgan_1.4"):
+            raise RuntimeError("GFPGAN post-stage model unavailable")
+        cfg = RESTORATION_MODELS["gfpgan_1.4"]
+        self.session, self.provider_resolution = create_onnx_session(
+            _model_path(cfg), self.onnx_provider, cfg["label"])
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_names = [o.name for o in self.session.get_outputs()]
+
+    def restore(self, face_rgb):
+        if face_rgb.size == 0:
+            return face_rgb
+        h, w = face_rgb.shape[:2]
+        resized = cv2.resize(face_rgb, (self._INPUT_SIZE, self._INPUT_SIZE), interpolation=cv2.INTER_AREA)
+        tensor = resized.astype(np.float32) / 127.5 - 1.0
+        tensor = np.transpose(tensor, (2, 0, 1))[np.newaxis]
+        output = self.session.run(self.output_names, {self.input_name: tensor})[0]
+        restored = _onnx_output_to_rgb(output)
+        if restored is None:
+            return face_rgb
+        if restored.shape[:2] != (h, w):
+            restored = cv2.resize(restored, (w, h), interpolation=cv2.INTER_CUBIC)
+        return restored
+
+
+class UpscalePostStage:
+    """Real-ESRGAN ONNX tiled 2x upscaler."""
+
+    def __init__(self, onnx_provider=None):
+        self.onnx_provider = onnx_provider_key(onnx_provider)
+        if not ensure_restoration_model("real_esrgan_x2"):
+            raise RuntimeError("Real-ESRGAN post-stage model unavailable")
+        cfg = RESTORATION_MODELS["real_esrgan_x2"]
+        self.session, self.provider_resolution = create_onnx_session(
+            _model_path(cfg), self.onnx_provider, cfg["label"])
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_names = [o.name for o in self.session.get_outputs()]
+
+    def _run_tile(self, tile_rgb):
+        tensor = tile_rgb.astype(np.float32) / 255.0
+        tensor = np.transpose(tensor, (2, 0, 1))[np.newaxis]
+        output = self.session.run(self.output_names, {self.input_name: tensor})[0]
+        upscaled = _onnx_output_to_rgb(output)
+        if upscaled is None:
+            return cv2.resize(tile_rgb, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        return upscaled
+
+    def upscale(self, rgb, tile_size=512):
+        h, w = rgb.shape[:2]
+        tile_size = int(max(128, min(2048, tile_size or 512)))
+        if h <= tile_size and w <= tile_size:
+            return self._run_tile(rgb)
+
+        overlap = min(32, max(8, tile_size // 8))
+        first = rgb[0:min(tile_size, h), 0:min(tile_size, w)]
+        first_up = self._run_tile(first)
+        scale_y = max(1, int(round(first_up.shape[0] / max(first.shape[0], 1))))
+        scale_x = max(1, int(round(first_up.shape[1] / max(first.shape[1], 1))))
+        out_h, out_w = h * scale_y, w * scale_x
+        accum = np.zeros((out_h, out_w, 3), dtype=np.float32)
+        weight = np.zeros((out_h, out_w, 1), dtype=np.float32)
+        step = max(1, tile_size - overlap)
+
+        for y0 in range(0, h, step):
+            for x0 in range(0, w, step):
+                y1 = min(h, y0 + tile_size)
+                x1 = min(w, x0 + tile_size)
+                tile = rgb[y0:y1, x0:x1]
+                up = first_up if (y0 == 0 and x0 == 0) else self._run_tile(tile)
+                oy0, ox0 = y0 * scale_y, x0 * scale_x
+                oy1, ox1 = oy0 + up.shape[0], ox0 + up.shape[1]
+                accum[oy0:oy1, ox0:ox1] += up.astype(np.float32)
+                weight[oy0:oy1, ox0:ox1] += 1.0
+
+        weight = np.maximum(weight, 1.0)
+        return np.clip(accum / weight, 0, 255).astype(np.uint8)
+
+
 def face_components(face):
     if len(face) >= 3:
         return face[0], face[1], face[2] or {}
     return face[0], face[1], {}
+
+
+def scale_faces_for_frame(faces, source_shape, target_shape):
+    if not faces or not source_shape or not target_shape:
+        return faces
+    src_h, src_w = source_shape[:2]
+    dst_h, dst_w = target_shape[:2]
+    if src_h <= 0 or src_w <= 0 or (src_h, src_w) == (dst_h, dst_w):
+        return faces
+    scale = np.array([dst_w / src_w, dst_h / src_h], dtype=np.float64)
+    scaled = []
+    for face in faces:
+        lms, conf, blendshapes = face_components(face)
+        scaled.append((lms * scale, conf, blendshapes))
+    return scaled
 
 
 def blend_score(blendshapes, *names):
@@ -1182,6 +1381,9 @@ def apply_disclosure_watermark(frame, enabled=True):
 
 
 def compose_compare_frame(original, processed, mode):
+    if original.shape[:2] != processed.shape[:2]:
+        ph, pw = processed.shape[:2]
+        original = cv2.resize(original, (pw, ph), interpolation=cv2.INTER_CUBIC)
     if mode == 'side_by_side':
         return np.concatenate([original, processed], axis=1)
     if mode == 'split':
@@ -1195,7 +1397,13 @@ def compose_compare_frame(original, processed, mode):
     return processed
 
 
-def video_output_size(width, height, mode):
+def post_stage_output_dimensions(width, height, params=None):
+    factor = post_stage_upscale_factor(params or {})
+    return int(width) * factor, int(height) * factor
+
+
+def video_output_size(width, height, mode, params=None):
+    width, height = post_stage_output_dimensions(width, height, params)
     if mode == 'side_by_side':
         return width * 2, height
     return width, height
@@ -1373,10 +1581,19 @@ def params_from_preset_and_overrides(preset_name=None, overrides=None):
     if preset_name:
         params.update(resolve_preset(preset_name))
     if overrides:
-        for key, value in overrides.items():
-            if key in CLI_PARAM_KEYS:
-                params[key] = int(value)
+        params.update(coerce_param_overrides(overrides))
     return params
+
+
+def coerce_param_overrides(values):
+    overrides = {}
+    for key, value in (values or {}).items():
+        normalized = str(key).strip().replace("-", "_")
+        if normalized in CLI_PARAM_KEYS:
+            overrides[normalized] = int(value)
+        elif normalized == "post_stage_model":
+            overrides[normalized] = post_stage_model_key(value)
+    return overrides
 
 
 def parse_param_overrides(raw):
@@ -1568,7 +1785,7 @@ def _add_disk_guardrail(report, output_path):
         )
 
 
-def preflight_media_job(input_path, output_path, compare_mode="none"):
+def preflight_media_job(input_path, output_path, compare_mode="none", params=None):
     report = {
         "ok": False,
         "input": input_path,
@@ -1602,6 +1819,7 @@ def preflight_media_job(input_path, output_path, compare_mode="none"):
         except Exception as e:
             report["errors"].append(f"Cannot read image header: {e}")
             return report
+        width, height = post_stage_output_dimensions(width, height, params)
         pixel_bytes = max(1, int(width) * int(height) * max(3, bands))
         out_ext = os.path.splitext(output_path or "")[1].lower()
         if out_ext in {".jpg", ".jpeg", ".webp"}:
@@ -1645,7 +1863,7 @@ def preflight_media_job(input_path, output_path, compare_mode="none"):
             report["warnings"].append("Video FPS is unknown; estimating at 30 FPS")
         if frame_count <= 0:
             report["warnings"].append("Frame count is unknown; progress and size estimates are conservative")
-        out_w, out_h = video_output_size(width, height, compare_mode)
+        out_w, out_h = video_output_size(width, height, compare_mode, params)
         estimated_frames = max(frame_count, 1)
         estimated_output = max(
             report["input_size_bytes"] or 0,
@@ -1722,6 +1940,8 @@ def load_batch_manifest(manifest_path, fallback_output=None, fallback_parser_mod
         data = json.load(f)
     base_dir = os.path.dirname(os.path.abspath(manifest_path))
     default_params = params_from_preset_and_overrides(data.get("preset"), data.get("params"))
+    if data.get("post_stage_model"):
+        default_params["post_stage_model"] = post_stage_model_key(data.get("post_stage_model"))
     default_parser_model = parser_model_key(data.get("parser_model") or fallback_parser_model)
     default_onnx_provider = onnx_provider_key(data.get("onnx_provider") or fallback_onnx_provider)
     default_face_params = data.get("face_params") or {}
@@ -1739,7 +1959,9 @@ def load_batch_manifest(manifest_path, fallback_output=None, fallback_parser_mod
         if entry.get("preset"):
             params.update(resolve_preset(entry["preset"]))
         if entry.get("params"):
-            params.update({k: int(v) for k, v in entry["params"].items() if k in CLI_PARAM_KEYS})
+            params.update(coerce_param_overrides(entry["params"]))
+        if entry.get("post_stage_model"):
+            params["post_stage_model"] = post_stage_model_key(entry.get("post_stage_model"))
         if entry.get("face_params"):
             params["face_params"] = {int(k) - 1 if str(k).isdigit() else k: v
                                      for k, v in entry["face_params"].items()}
@@ -1897,6 +2119,8 @@ class FaceWarpEngine:
         # Face parsing engine (optional, for better masks + skin smooth)
         self.parser = None
         self.matter = None
+        self.face_restorer = None
+        self.upscaler = None
         if ensure_parsing_model(self.parser_model):
             try:
                 self.parser = FaceParsingEngine(self.parser_model, self.onnx_provider)
@@ -2465,7 +2689,7 @@ class FaceWarpEngine:
             gray = cv2.cvtColor(pre_warp, cv2.COLOR_RGB2GRAY)
             self.flow_prop.store_keyframe(gray, result, pre_warp)
 
-        return result
+        return self.apply_post_stage(frame, result, faces, params)
 
     def _warp_full_frame(self, frame, src, tgt, params, cache):
         """Legacy full-frame warp (bg_protect=0)."""
@@ -2588,11 +2812,91 @@ class FaceWarpEngine:
         # 6. Composite via seamless clone
         return self._composite_roi(frame, warped_roi, mask_roi, roi)
 
+    def _get_face_restorer(self):
+        if self.face_restorer is None:
+            self.face_restorer = FaceRestorationPostStage(self.onnx_provider)
+        return self.face_restorer
+
+    def _get_upscaler(self):
+        if self.upscaler is None:
+            self.upscaler = UpscalePostStage(self.onnx_provider)
+        return self.upscaler
+
+    def _face_restore_mask(self, roi_rgb, lms, roi_bounds, face_idx=0):
+        rh, rw = roi_rgb.shape[:2]
+        if self.parser is not None:
+            try:
+                parsing = self.parser.parse(roi_rgb)
+                mask = self.parser.get_mask(parsing, FACE_MASK_LABELS, feather=17)
+                if self.mask_smoother is not None:
+                    mask = self.mask_smoother.smooth(mask, face_idx=face_idx)
+                return np.clip(mask, 0.0, 1.0)
+            except Exception as e:
+                print(f"Post-stage parsing fallback: {e}")
+        offset = np.array([roi_bounds[0], roi_bounds[1]], dtype=np.float64)
+        mask = self._compute_face_mask(lms, rh, rw, 70, roi_offset=offset)
+        if mask is None:
+            mask = np.ones((rh, rw), dtype=np.float32)
+        return np.clip(mask, 0.0, 1.0)
+
+    def _apply_face_restoration_post_stage(self, frame, faces, params):
+        if not faces:
+            return frame
+        strength = max(0.0, min(1.0, params.get("post_stage_strength", 50) / 100.0))
+        fidelity = max(0.0, min(1.0, params.get("post_stage_fidelity", 70) / 100.0))
+        # Higher fidelity keeps more original pixels; lower fidelity lets GFPGAN dominate.
+        blend_strength = strength * (1.0 - fidelity * 0.75)
+        if blend_strength <= 0.01:
+            return frame
+        restorer = self._get_face_restorer()
+        result = frame.copy()
+        h, w = result.shape[:2]
+        for i, face in enumerate(faces):
+            lms, _conf, _blendshapes = face_components(face)
+            try:
+                roi_bounds = self._compute_roi(lms, h, w, pad_ratio=0.36)
+                rx1, ry1, rx2, ry2 = roi_bounds
+                roi_rgb = result[ry1:ry2, rx1:rx2].copy()
+                if roi_rgb.size == 0:
+                    continue
+                restored = restorer.restore(roi_rgb)
+                if restored.shape[:2] != roi_rgb.shape[:2]:
+                    restored = cv2.resize(restored, (roi_rgb.shape[1], roi_rgb.shape[0]),
+                                          interpolation=cv2.INTER_CUBIC)
+                mask = self._face_restore_mask(roi_rgb, lms, roi_bounds, i)
+                alpha = (mask * blend_strength)[:, :, np.newaxis]
+                blended = restored.astype(np.float32) * alpha + roi_rgb.astype(np.float32) * (1.0 - alpha)
+                result[ry1:ry2, rx1:rx2] = np.clip(blended, 0, 255).astype(np.uint8)
+            except Exception as e:
+                print(f"Face restoration post-stage error face {i}: {e}")
+        return result
+
+    def apply_post_stage(self, original_frame, processed_frame, faces, params):
+        model_key = post_stage_model_key((params or {}).get("post_stage_model"))
+        if model_key == POST_STAGE_OFF:
+            return processed_frame
+        result = processed_frame
+        try:
+            if "gfpgan_1.4" in post_stage_model_keys(model_key):
+                result = self._apply_face_restoration_post_stage(result, faces, params)
+            if "real_esrgan_x2" in post_stage_model_keys(model_key):
+                tile = int((params or {}).get("post_stage_tile", 512) or 512)
+                result = self._get_upscaler().upscale(result, tile)
+        except Exception as e:
+            log_render_event("post_stage_failed", str(e), {
+                "post_stage_model": model_key,
+                "original_shape": list(original_frame.shape[:2]) if original_frame is not None else None,
+                "processed_shape": list(processed_frame.shape[:2]) if processed_frame is not None else None,
+            }, traceback.format_exc())
+            print(f"Post-stage failed: {e}")
+        return result
+
     def warp_single_image(self, frame_rgb, params):
         """Convenience for single-image processing."""
         faces = self.detect(frame_rgb)
         if not faces:
-            return frame_rgb, []
+            result = self.apply_post_stage(frame_rgb, frame_rgb.copy(), [], params)
+            return result, []
         return self.warp(frame_rgb, faces, params), faces
 
     def close(self):
@@ -2794,12 +3098,12 @@ class VideoThread(QThread):
 
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     faces = eng.detect(rgb)
-                    has_fx = any(abs(self.params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
+                    has_fx = has_effective_processing(self.params)
 
                     # Update temporal beta if changed
                     eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
 
-                    proc = eng.warp(rgb, faces, self.params) if (faces and has_fx) else rgb.copy()
+                    proc = eng.warp(rgb, faces, self.params) if has_fx else rgb.copy()
                     teeth_hint_rois = eng.teeth_hint_rois(proc, faces) if (self.show_teeth_hint and faces) else []
                     if self.virtualcam_enabled:
                         try:
@@ -2885,7 +3189,7 @@ class ExportThread(QThread):
         cap = None
         writer = None
         try:
-            preflight = preflight_media_job(self.inp, self.out, self.compare_mode)
+            preflight = preflight_media_job(self.inp, self.out, self.compare_mode, self.params)
             self.status.emit(format_preflight_summary(preflight))
             if not preflight["ok"]:
                 msg = preflight_failure_message(preflight)
@@ -2906,12 +3210,12 @@ class ExportThread(QThread):
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 30
             w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            out_w, out_h = video_output_size(w, h, self.compare_mode)
+            out_w, out_h = video_output_size(w, h, self.compare_mode, self.params)
             writer = cv2.VideoWriter(self.out, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
             if not writer.isOpened():
                 raise ValueError(f"Cannot open output writer: {self.out}")
             self.status.emit(f"Exporting {total} frames...")
-            has_fx = any(abs(self.params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
+            has_fx = has_effective_processing(self.params)
             t_start = time.time()
             for i in range(total):
                 if self.cancelled:
@@ -2920,7 +3224,7 @@ class ExportThread(QThread):
                 if not ret: break
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 faces = eng.detect(rgb)
-                proc = eng.warp(rgb, faces, self.params) if (faces and has_fx) else rgb
+                proc = eng.warp(rgb, faces, self.params) if has_fx else rgb
                 proc = compose_compare_frame(rgb, proc, self.compare_mode)
                 proc = apply_disclosure_watermark(proc, self.watermark)
                 writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
@@ -3118,7 +3422,7 @@ class BatchThread(QThread):
         eng = None
         out_path = media_job_output_path(job, self.output_dir, filepath, ".png")
         try:
-            preflight = preflight_media_job(filepath, out_path, job.get("compare_mode", self.compare_mode))
+            preflight = preflight_media_job(filepath, out_path, job.get("compare_mode", self.compare_mode), params)
             self.job_update.emit(index, "Processing", 5, format_preflight_summary(preflight), "--")
             if not preflight["ok"]:
                 msg = preflight_failure_message(preflight)
@@ -3166,7 +3470,7 @@ class BatchThread(QThread):
         writer = None
         out_path = media_job_output_path(job, self.output_dir, filepath, ".mp4")
         try:
-            preflight = preflight_media_job(filepath, out_path, compare_mode)
+            preflight = preflight_media_job(filepath, out_path, compare_mode, params)
             self.job_update.emit(index, "Processing", 5, format_preflight_summary(preflight), "--")
             if not preflight["ok"]:
                 msg = preflight_failure_message(preflight)
@@ -3189,11 +3493,11 @@ class BatchThread(QThread):
             out_dir = os.path.dirname(out_path)
             if out_dir:
                 os.makedirs(out_dir, exist_ok=True)
-            out_w, out_h = video_output_size(w, h, compare_mode)
+            out_w, out_h = video_output_size(w, h, compare_mode, params)
             writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
             if not writer.isOpened():
                 raise ValueError(f"Cannot open output writer: {out_path}")
-            has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
+            has_fx = has_effective_processing(params)
             total = max(total, 1)
             started_at = time.time()
             for frame_idx in range(total):
@@ -3204,7 +3508,7 @@ class BatchThread(QThread):
                     break
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 faces = eng.detect(rgb)
-                proc = eng.warp(rgb, faces, params) if (faces and has_fx) else rgb
+                proc = eng.warp(rgb, faces, params) if has_fx else rgb
                 proc = compose_compare_frame(rgb, proc, compare_mode)
                 proc = apply_disclosure_watermark(proc, watermark)
                 writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
@@ -3664,6 +3968,7 @@ class FaceSlimApp(QMainWindow):
             (self.combo_model_redownload, "Model redownload selector", "Choose one model or all models for redownload."),
             (self.btn_model_refresh, "Refresh model inventory", "Refresh model verification, source, license, and cache status."),
             (self.btn_model_redownload, "Redownload model", "Redownload the selected model artifact and verify its hash."),
+            (self.combo_post_stage, "Post-stage model", "Choose optional GFPGAN restoration, Real-ESRGAN upscale, both, or off."),
             (self.chk_lm, "Show landmarks", "Overlay detected face landmarks on the preview."),
             (self.chk_conf, "Show confidence", "Overlay face detection confidence on the preview."),
             (self.chk_teeth_hint, "Show teeth mask", "Overlay the whitening target mask in preview only."),
@@ -3697,6 +4002,7 @@ class FaceSlimApp(QMainWindow):
             *[slider for slider, _label in self.sliders.values()],
             self.combo_parser_model, self.combo_onnx_provider, self.btn_provider_bench,
             self.combo_model_redownload, self.btn_model_refresh, self.btn_model_redownload,
+            self.combo_post_stage,
             self.chk_lm, self.chk_conf, self.chk_teeth_hint,
             self.spin_faces, self.combo_scale, self.preset_combo,
             self.btn_exp_video, self.btn_exp_cancel, self.btn_exp_img, self.btn_exp_gif,
@@ -3902,6 +4208,20 @@ class FaceSlimApp(QMainWindow):
         self.model_inventory_lbl.setWordWrap(True)
         self.model_inventory_lbl.setStyleSheet("color:#bac2de; font-size:10px;")
         g_bl.addWidget(self.model_inventory_lbl)
+        post_row = QHBoxLayout()
+        post_row.addWidget(QLabel("Post-Stage:"))
+        self.combo_post_stage = QComboBox()
+        for key, cfg in POST_STAGE_OPTIONS.items():
+            self.combo_post_stage.addItem(cfg["label"], key)
+        self.combo_post_stage.currentIndexChanged.connect(self._on_post_stage_changed)
+        post_row.addWidget(self.combo_post_stage)
+        g_bl.addLayout(post_row)
+        self._make_slider(g_bl, 'post_stage_strength', 'Post Strength', default=50,
+                          tip='Blend amount for optional restoration or upscale stage')
+        self._make_slider(g_bl, 'post_stage_fidelity', 'Identity Fidelity', default=70,
+                          tip='Higher values preserve more original face detail')
+        self._make_slider(g_bl, 'post_stage_tile', 'Upscale Tile', max_v=1024, default=512,
+                          tip='Real-ESRGAN tile size for large images or video frames')
         t1.addWidget(g_beauty)
 
         g2 = QGroupBox("Quality"); g2l = QVBoxLayout(g2); g2l.setSpacing(6)
@@ -4043,6 +4363,7 @@ class FaceSlimApp(QMainWindow):
 
     def _p(self):
         p = {k: s.value() for k, (s, _) in self.sliders.items()}
+        p["post_stage_model"] = self._post_stage_model_key()
         return p
 
     def _set_params(self, params):
@@ -4050,6 +4371,10 @@ class FaceSlimApp(QMainWindow):
         for k, v in params.items():
             if k in self.sliders:
                 self.sliders[k][0].setValue(v)
+        if "post_stage_model" in params and hasattr(self, "combo_post_stage"):
+            idx = self.combo_post_stage.findData(post_stage_model_key(params.get("post_stage_model")))
+            if idx >= 0:
+                self.combo_post_stage.setCurrentIndex(idx)
         self.history.unfreeze()
         self._push()
         if self.image_mode:
@@ -4183,6 +4508,11 @@ class FaceSlimApp(QMainWindow):
             return onnx_provider_key(self.combo_onnx_provider.currentData())
         return DEFAULT_ONNX_PROVIDER
 
+    def _post_stage_model_key(self):
+        if hasattr(self, "combo_post_stage"):
+            return post_stage_model_key(self.combo_post_stage.currentData())
+        return POST_STAGE_OFF
+
     def _set_parser_model_status(self):
         key = self._parser_model_key()
         ready = parser_model_ready(key)
@@ -4228,6 +4558,13 @@ class FaceSlimApp(QMainWindow):
             self._process_current_image()
         if hasattr(self, "toast"):
             self.toast.show_message(f"ONNX provider: {onnx_provider_label(self._onnx_provider_key())}")
+
+    def _on_post_stage_changed(self, _idx):
+        self._push()
+        if self.image_mode:
+            self._process_current_image()
+        if hasattr(self, "toast"):
+            self.toast.show_message(f"Post-stage: {post_stage_model_label(self._post_stage_model_key())}")
 
     def _benchmark_provider(self):
         if self._provider_diag_thread and self._provider_diag_thread.isRunning():
@@ -4436,12 +4773,16 @@ class FaceSlimApp(QMainWindow):
     def _display_frame(self, orig, proc, faces):
         if orig is None or proc is None:
             return
+        source_shape = orig.shape
         if self.comparison_mode:
-            h, w = orig.shape[:2]
+            if orig.shape[:2] != proc.shape[:2]:
+                ph, pw = proc.shape[:2]
+                orig = cv2.resize(orig, (pw, ph), interpolation=cv2.INTER_CUBIC)
+            h, w = proc.shape[:2]
             sx = max(1, min(w - 1, int(w * self.video_label.divider_ratio)))
             proc_show = (apply_teeth_hint_rois(proc, self.current_teeth_hint_rois)
                          if self.chk_teeth_hint.isChecked() else proc)
-            show = np.empty_like(orig)
+            show = np.empty_like(proc_show)
             show[:, :sx] = orig[:, :sx]; show[:, sx:] = proc_show[:, sx:]
             cv2.line(show, (sx, 0), (sx, h), (203, 166, 247), 3)
             cy = h // 2
@@ -4458,7 +4799,8 @@ class FaceSlimApp(QMainWindow):
         show_lm = (self.video_thread and self.video_thread.show_landmarks) if self.video_thread else self.chk_lm.isChecked()
         show_conf = (self.video_thread and self.video_thread.show_confidence) if self.video_thread else self.chk_conf.isChecked()
         if faces and (show_lm or show_conf):
-            show = draw_landmarks(show.copy() if show is proc else show, faces, show_conf, show_lm)
+            draw_faces = scale_faces_for_frame(faces, source_shape, show.shape)
+            show = draw_landmarks(show.copy() if show is proc else show, draw_faces, show_conf, show_lm)
 
         show = np.ascontiguousarray(show)
         h, w, ch = show.shape
@@ -4645,6 +4987,11 @@ class FaceSlimApp(QMainWindow):
         provider_idx = self.combo_onnx_provider.findData(saved_provider)
         if provider_idx >= 0:
             self.combo_onnx_provider.setCurrentIndex(provider_idx)
+        saved_post_stage = post_stage_model_key(
+            self.settings.value("post_stage_model", POST_STAGE_OFF, type=str))
+        post_stage_idx = self.combo_post_stage.findData(saved_post_stage)
+        if post_stage_idx >= 0:
+            self.combo_post_stage.setCurrentIndex(post_stage_idx)
         self._set_parser_model_status()
 
     def _save_settings(self):
@@ -4656,6 +5003,7 @@ class FaceSlimApp(QMainWindow):
         self.settings.setValue("video_compare", self.combo_video_compare.currentIndex())
         self.settings.setValue("parser_model", self._parser_model_key())
         self.settings.setValue("onnx_provider", self._onnx_provider_key())
+        self.settings.setValue("post_stage_model", self._post_stage_model_key())
 
     def closeEvent(self, e):
         self._save_settings(); self.stop_video()
@@ -4676,6 +5024,8 @@ def cli_process(args):
     ensure_parsing_model(parser_model)  # Non-fatal - falls back to landmark mask
     overrides = {k: getattr(args, k) for k in CLI_PARAM_KEYS
                  if hasattr(args, k) and getattr(args, k) is not None}
+    if getattr(args, "post_stage_model", None):
+        overrides["post_stage_model"] = args.post_stage_model
     try:
         params = params_from_preset_and_overrides(args.preset, overrides)
         face_overrides = parse_face_overrides(args.face_preset, args.face_param)
@@ -4707,6 +5057,7 @@ def cli_process(args):
     print(f"\nFaceSlim v{VERSION} - CLI Mode")
     print(f"  GPU: {'ON (' + GPU_NAME + ')' if USE_GPU else 'OFF'}")
     print(f"  ONNX Provider: {onnx_provider_label(onnx_provider)}")
+    print(f"  Post-stage: {post_stage_model_label(params.get('post_stage_model'))}")
     print(f"  Files: {len(inputs)}")
     print(f"  Params: {json.dumps({k: v for k, v in params.items() if v != 0}, indent=2)}")
     print(f"  Output: {output_dir}\n")
@@ -4731,7 +5082,7 @@ def cli_process(args):
         try:
             if ext in IMAGE_EXTS:
                 out_path = media_job_output_path(job, output_dir, filepath, ".png")
-                preflight = preflight_media_job(filepath, out_path, compare_mode)
+                preflight = preflight_media_job(filepath, out_path, compare_mode, params)
                 print(f"    {format_preflight_summary(preflight)}")
                 if not preflight["ok"]:
                     msg = preflight_failure_message(preflight)
@@ -4758,7 +5109,7 @@ def cli_process(args):
 
             elif ext in VIDEO_EXTS:
                 out_path = media_job_output_path(job, output_dir, filepath, ".mp4")
-                preflight = preflight_media_job(filepath, out_path, compare_mode)
+                preflight = preflight_media_job(filepath, out_path, compare_mode, params)
                 print(f"    {format_preflight_summary(preflight)}")
                 if not preflight["ok"]:
                     msg = preflight_failure_message(preflight)
@@ -4779,18 +5130,18 @@ def cli_process(args):
                 fps = cap.get(cv2.CAP_PROP_FPS) or 30
                 w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                out_w, out_h = video_output_size(w, h, compare_mode)
+                out_w, out_h = video_output_size(w, h, compare_mode, params)
                 writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
                 if not writer.isOpened():
                     raise ValueError(f"Cannot open output writer: {out_path}")
-                has_fx = any(abs(params.get(k, 0)) > 0 for k in EFFECT_PARAM_KEYS)
+                has_fx = has_effective_processing(params)
                 t0 = time.time()
                 for fi in range(total):
                     ret, frame = cap.read()
                     if not ret: break
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     faces = eng.detect(rgb)
-                    proc = eng.warp(rgb, faces, params) if (faces and has_fx) else rgb
+                    proc = eng.warp(rgb, faces, params) if has_fx else rgb
                     proc = compose_compare_frame(rgb, proc, compare_mode)
                     proc = apply_disclosure_watermark(proc, watermark)
                     writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
@@ -4878,6 +5229,14 @@ Examples:
     parser.add_argument('--temporal', type=int, help='Temporal landmark smoothing (0-100)')
     parser.add_argument('--bg-protect', type=int, dest='bg_protect', help='Background protection (0-100)')
     parser.add_argument('--matting-refine', type=int, dest='matting_refine', help='MODNet mask edge refinement (0-100)')
+    parser.add_argument('--post-stage', dest='post_stage_model', choices=list(POST_STAGE_OPTIONS.keys()),
+                        help='Optional post-stage model: off, GFPGAN, Real-ESRGAN 2x, or both')
+    parser.add_argument('--post-strength', type=int, dest='post_stage_strength',
+                        help='Post-stage blend strength (0-100)')
+    parser.add_argument('--post-fidelity', type=int, dest='post_stage_fidelity',
+                        help='Identity fidelity for face restoration (0-100; higher keeps more original detail)')
+    parser.add_argument('--post-tile', type=int, dest='post_stage_tile',
+                        help='Real-ESRGAN tile size for large frames (128-1024 recommended)')
     parser.add_argument('--faces', type=int, help='Max faces to process (1-5)')
     parser.add_argument('--face-preset', action='append', default=[], metavar='FACE=PRESET',
                         help='Apply a preset to one face index, e.g. 2=Beauty')
