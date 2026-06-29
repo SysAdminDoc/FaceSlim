@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.24.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.25.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -96,7 +96,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.24.0"
+VERSION = "1.25.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), '.faceslim')
 PRESETS_DIR = os.path.join(CONFIG_DIR, 'presets')
@@ -108,6 +108,60 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
+
+TRANSLATIONS = {
+    "en": {},
+}
+_CURRENT_LOCALE = os.environ.get("FACESLIM_LOCALE", "en").strip().lower() or "en"
+
+
+def set_locale(locale):
+    global _CURRENT_LOCALE
+    _CURRENT_LOCALE = str(locale or "en").strip().lower() or "en"
+
+
+def current_locale():
+    return _CURRENT_LOCALE
+
+
+def pseudo_localize(text):
+    return f"[!! {text} !!]"
+
+
+def tr(text):
+    if _CURRENT_LOCALE in {"pseudo", "qps"}:
+        return pseudo_localize(text)
+    return TRANSLATIONS.get(_CURRENT_LOCALE, TRANSLATIONS["en"]).get(text, text)
+
+
+MAIN_UI_TEXT_LIMITS = {
+    "Webcam": 24,
+    "Load File": 26,
+    "Stop": 20,
+    "Undo": 20,
+    "Redo": 20,
+    "A/B Compare": 30,
+    "Virtual Cam": 30,
+    "Refresh Models": 34,
+    "Redownload": 30,
+    "Post-Stage:": 30,
+    "Parser Model:": 34,
+    "ONNX Provider:": 34,
+    "Benchmark": 30,
+    "Export Video": 32,
+    "Cancel Export": 34,
+    "Save Screenshot": 36,
+    "Before/After GIF": 38,
+}
+
+
+def pseudo_locale_overflow_report(text_limits=None):
+    report = []
+    for text, limit in (text_limits or MAIN_UI_TEXT_LIMITS).items():
+        localized = pseudo_localize(text)
+        if len(localized) > limit:
+            report.append({"text": text, "localized": localized, "limit": limit})
+    return report
 
 # ── Crash Handler ───────────────────────────────────────────────────────
 def exception_handler(exc_type, exc_value, exc_tb):
@@ -3910,7 +3964,7 @@ class ModelRedownloadThread(QThread):
 class FaceSlimApp(QMainWindow):
     def __init__(self, show_responsible_gate=True):
         super().__init__()
-        self.setWindowTitle(f"FaceSlim v{VERSION}")
+        self.setWindowTitle(f"{tr('FaceSlim')} v{VERSION}")
         self.setMinimumSize(1150, 720); self.resize(1360, 800)
         self.setAcceptDrops(True)
         self.settings = QSettings("FaceSlim", "FaceSlim")
@@ -4054,7 +4108,7 @@ class FaceSlimApp(QMainWindow):
         # ── Left: Video ──
         left = QVBoxLayout(); left.setSpacing(8)
         hdr = QHBoxLayout()
-        t = QLabel("FaceSlim")
+        t = QLabel(tr("FaceSlim"))
         t.setStyleSheet("font-size: 20px; font-weight: bold; color: #89b4fa;")
         hdr.addWidget(t)
         self.face_count_label = QLabel("")
@@ -4073,11 +4127,11 @@ class FaceSlimApp(QMainWindow):
         self.video_label.setStyleSheet(
             "background-color:#11111b; border:2px solid #313244; border-radius:8px; "
             "color:#6c7086; font-size:14px;")
-        self.video_label.setText("Drop a file here, or use the buttons below to start")
+        self.video_label.setText(tr("Drop a file here, or use the buttons below to start"))
         left.addWidget(self.video_label, 1)
 
         timeline_row = QHBoxLayout(); timeline_row.setSpacing(8)
-        timeline_title = QLabel("Timeline")
+        timeline_title = QLabel(tr("Timeline"))
         timeline_title.setStyleSheet("color:#89b4fa; font-size:11px; font-weight:bold;")
         timeline_row.addWidget(timeline_title)
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
@@ -4096,30 +4150,30 @@ class FaceSlimApp(QMainWindow):
         self.toast = Toast(self.video_label)
 
         # Transport
-        tr = QHBoxLayout(); tr.setSpacing(6)
-        self.btn_webcam = QPushButton("Webcam"); self.btn_webcam.clicked.connect(self.start_webcam)
-        tr.addWidget(self.btn_webcam)
-        self.btn_load = QPushButton("Load File"); self.btn_load.setProperty("secondary", True)
-        self.btn_load.clicked.connect(self.load_file); tr.addWidget(self.btn_load)
-        self.btn_stop = QPushButton("Stop"); self.btn_stop.setProperty("danger", True)
+        transport_row = QHBoxLayout(); transport_row.setSpacing(6)
+        self.btn_webcam = QPushButton(tr("Webcam")); self.btn_webcam.clicked.connect(self.start_webcam)
+        transport_row.addWidget(self.btn_webcam)
+        self.btn_load = QPushButton(tr("Load File")); self.btn_load.setProperty("secondary", True)
+        self.btn_load.clicked.connect(self.load_file); transport_row.addWidget(self.btn_load)
+        self.btn_stop = QPushButton(tr("Stop")); self.btn_stop.setProperty("danger", True)
         self.btn_stop.clicked.connect(self.stop_video); self.btn_stop.setEnabled(False)
-        tr.addWidget(self.btn_stop); tr.addStretch()
+        transport_row.addWidget(self.btn_stop); transport_row.addStretch()
 
-        self.btn_undo = QPushButton("Undo"); self.btn_undo.setProperty("secondary", True)
+        self.btn_undo = QPushButton(tr("Undo")); self.btn_undo.setProperty("secondary", True)
         self.btn_undo.clicked.connect(self._undo); self.btn_undo.setEnabled(False)
-        tr.addWidget(self.btn_undo)
-        self.btn_redo = QPushButton("Redo"); self.btn_redo.setProperty("secondary", True)
+        transport_row.addWidget(self.btn_undo)
+        self.btn_redo = QPushButton(tr("Redo")); self.btn_redo.setProperty("secondary", True)
         self.btn_redo.clicked.connect(self._redo); self.btn_redo.setEnabled(False)
-        tr.addWidget(self.btn_redo)
+        transport_row.addWidget(self.btn_redo)
 
-        self.btn_cmp = QPushButton("A/B Compare"); self.btn_cmp.setCheckable(True)
-        self.btn_cmp.toggled.connect(self._toggle_compare); tr.addWidget(self.btn_cmp)
-        self.btn_virtualcam = QPushButton("Virtual Cam"); self.btn_virtualcam.setCheckable(True)
+        self.btn_cmp = QPushButton(tr("A/B Compare")); self.btn_cmp.setCheckable(True)
+        self.btn_cmp.toggled.connect(self._toggle_compare); transport_row.addWidget(self.btn_cmp)
+        self.btn_virtualcam = QPushButton(tr("Virtual Cam")); self.btn_virtualcam.setCheckable(True)
         self.btn_virtualcam.setProperty("secondary", True)
         self.btn_virtualcam.clicked.connect(self._toggle_virtualcam)
         self.btn_virtualcam.setEnabled(False)
-        tr.addWidget(self.btn_virtualcam)
-        left.addLayout(tr)
+        transport_row.addWidget(self.btn_virtualcam)
+        left.addLayout(transport_row)
         root.addLayout(left, 3)
 
         # ── Right: Tabbed Controls ──
@@ -4136,34 +4190,34 @@ class FaceSlimApp(QMainWindow):
         tab_reshape_scroll.setWidgetResizable(True)
         t1 = QVBoxLayout(tab_reshape); t1.setSpacing(8); t1.setContentsMargins(8,8,8,8)
 
-        g1 = QGroupBox("Face Reshaping"); g1l = QVBoxLayout(g1); g1l.setSpacing(6)
-        self._make_slider(g1l, 'jaw', 'Jaw Slimming', tip='Narrows the jawline')
-        self._make_slider(g1l, 'cheeks', 'Cheek Slimming', tip='Reduces cheek fullness')
-        self._make_slider(g1l, 'chin', 'Chin Reshape', tip='Lifts and narrows the chin')
-        self._make_slider(g1l, 'face_width', 'Overall Width', tip='Reduces overall face width')
-        self._make_slider(g1l, 'forehead', 'Forehead Slim', tip='Narrows the forehead')
-        self._make_slider(g1l, 'nose', 'Nose Slim', tip='Narrows the nose bridge and tip')
-        self._make_slider(g1l, 'eye_enlarge', 'Eye Enlarge', tip='Enlarges eyes outward from iris center')
-        self._make_slider(g1l, 'lip_plump', 'Lip Plump', tip='Plumps lips outward from lip center')
-        self._make_slider(g1l, 'expression_neutralize', 'Expression Neutralize', default=0,
+        g1 = QGroupBox(tr("Face Reshaping")); g1l = QVBoxLayout(g1); g1l.setSpacing(6)
+        self._make_slider(g1l, 'jaw', tr('Jaw Slimming'), tip='Narrows the jawline')
+        self._make_slider(g1l, 'cheeks', tr('Cheek Slimming'), tip='Reduces cheek fullness')
+        self._make_slider(g1l, 'chin', tr('Chin Reshape'), tip='Lifts and narrows the chin')
+        self._make_slider(g1l, 'face_width', tr('Overall Width'), tip='Reduces overall face width')
+        self._make_slider(g1l, 'forehead', tr('Forehead Slim'), tip='Narrows the forehead')
+        self._make_slider(g1l, 'nose', tr('Nose Slim'), tip='Narrows the nose bridge and tip')
+        self._make_slider(g1l, 'eye_enlarge', tr('Eye Enlarge'), tip='Enlarges eyes outward from iris center')
+        self._make_slider(g1l, 'lip_plump', tr('Lip Plump'), tip='Plumps lips outward from lip center')
+        self._make_slider(g1l, 'expression_neutralize', tr('Expression Neutralize'), default=0,
                           tip='Blendshape-guided dampening of frowns and raised or lowered brows')
         t1.addWidget(g1)
 
-        g_beauty = QGroupBox("AI Beauty"); g_bl = QVBoxLayout(g_beauty); g_bl.setSpacing(6)
-        self._make_slider(g_bl, 'skin_smooth', 'Skin Smoothing', default=0, tip='Frequency-separation bilateral filter on skin mask')
-        self._make_slider(g_bl, 'skin_tone_even', 'Skin Tone Even', default=0, tip='Reduces redness and blotchiness via LAB color correction')
-        self._make_slider(g_bl, 'teeth_whiten', 'Teeth Whitening', default=0, tip='HSV brightness boost in mouth region')
-        self._make_slider(g_bl, 'eye_sharpen', 'Eye Sharpen', default=0, tip='Unsharp mask on eyes and brows for crisp detail')
-        self._make_slider(g_bl, 'lip_color', 'Lip Color', default=0, tip='Boosts lip saturation and warmth')
-        self._make_slider(g_bl, 'under_eye', 'Under-Eye Smooth', default=0, tip='Dedicated smoothing below the eyes')
-        self._make_slider(g_bl, 'hair_hue', 'Hair Hue Shift', default=0, tip='Subtle hue shift on parsed hair region')
-        self._make_slider(g_bl, 'hair_saturation', 'Hair Saturation', default=0, tip='Boosts parsed hair color intensity')
-        self._make_slider(g_bl, 'hair_density', 'Hair Density Hint', default=0, tip='Darkens parsed hair region for a denser look')
-        self._make_slider(g_bl, 'blush', 'Blush Overlay', default=0, tip='Procedural cheek blush opacity')
-        self._make_slider(g_bl, 'lip_gloss', 'Lip Gloss', default=0, tip='Adds soft lip highlight and warmth')
-        self._make_slider(g_bl, 'eye_shadow', 'Eye Shadow', default=0, tip='Procedural eye shadow opacity')
+        g_beauty = QGroupBox(tr("AI Beauty")); g_bl = QVBoxLayout(g_beauty); g_bl.setSpacing(6)
+        self._make_slider(g_bl, 'skin_smooth', tr('Skin Smoothing'), default=0, tip='Frequency-separation bilateral filter on skin mask')
+        self._make_slider(g_bl, 'skin_tone_even', tr('Skin Tone Even'), default=0, tip='Reduces redness and blotchiness via LAB color correction')
+        self._make_slider(g_bl, 'teeth_whiten', tr('Teeth Whitening'), default=0, tip='HSV brightness boost in mouth region')
+        self._make_slider(g_bl, 'eye_sharpen', tr('Eye Sharpen'), default=0, tip='Unsharp mask on eyes and brows for crisp detail')
+        self._make_slider(g_bl, 'lip_color', tr('Lip Color'), default=0, tip='Boosts lip saturation and warmth')
+        self._make_slider(g_bl, 'under_eye', tr('Under-Eye Smooth'), default=0, tip='Dedicated smoothing below the eyes')
+        self._make_slider(g_bl, 'hair_hue', tr('Hair Hue Shift'), default=0, tip='Subtle hue shift on parsed hair region')
+        self._make_slider(g_bl, 'hair_saturation', tr('Hair Saturation'), default=0, tip='Boosts parsed hair color intensity')
+        self._make_slider(g_bl, 'hair_density', tr('Hair Density Hint'), default=0, tip='Darkens parsed hair region for a denser look')
+        self._make_slider(g_bl, 'blush', tr('Blush Overlay'), default=0, tip='Procedural cheek blush opacity')
+        self._make_slider(g_bl, 'lip_gloss', tr('Lip Gloss'), default=0, tip='Adds soft lip highlight and warmth')
+        self._make_slider(g_bl, 'eye_shadow', tr('Eye Shadow'), default=0, tip='Procedural eye shadow opacity')
         parser_row = QHBoxLayout()
-        parser_row.addWidget(QLabel("Parser Model:"))
+        parser_row.addWidget(QLabel(tr("Parser Model:")))
         self.combo_parser_model = QComboBox()
         for key, cfg in PARSER_MODELS.items():
             self.combo_parser_model.addItem(cfg["label"], key)
@@ -4174,13 +4228,13 @@ class FaceSlimApp(QMainWindow):
         self.parsing_lbl.setStyleSheet("color:#a6e3a1; font-size:10px;")
         g_bl.addWidget(self.parsing_lbl)
         provider_row = QHBoxLayout()
-        provider_row.addWidget(QLabel("ONNX Provider:"))
+        provider_row.addWidget(QLabel(tr("ONNX Provider:")))
         self.combo_onnx_provider = QComboBox()
         for key, cfg in ONNX_PROVIDER_OPTIONS.items():
             self.combo_onnx_provider.addItem(cfg["label"], key)
         self.combo_onnx_provider.currentIndexChanged.connect(self._on_onnx_provider_changed)
         provider_row.addWidget(self.combo_onnx_provider)
-        self.btn_provider_bench = QPushButton("Benchmark")
+        self.btn_provider_bench = QPushButton(tr("Benchmark"))
         self.btn_provider_bench.setProperty("secondary", True)
         self.btn_provider_bench.clicked.connect(self._benchmark_provider)
         provider_row.addWidget(self.btn_provider_bench)
@@ -4195,11 +4249,11 @@ class FaceSlimApp(QMainWindow):
         for cfg in all_model_configs():
             self.combo_model_redownload.addItem(cfg["label"], cfg["key"])
         model_row.addWidget(self.combo_model_redownload)
-        self.btn_model_refresh = QPushButton("Refresh Models")
+        self.btn_model_refresh = QPushButton(tr("Refresh Models"))
         self.btn_model_refresh.setProperty("secondary", True)
         self.btn_model_refresh.clicked.connect(self._set_model_inventory_status)
         model_row.addWidget(self.btn_model_refresh)
-        self.btn_model_redownload = QPushButton("Redownload")
+        self.btn_model_redownload = QPushButton(tr("Redownload"))
         self.btn_model_redownload.setProperty("secondary", True)
         self.btn_model_redownload.clicked.connect(self._redownload_selected_model)
         model_row.addWidget(self.btn_model_redownload)
@@ -4209,42 +4263,42 @@ class FaceSlimApp(QMainWindow):
         self.model_inventory_lbl.setStyleSheet("color:#bac2de; font-size:10px;")
         g_bl.addWidget(self.model_inventory_lbl)
         post_row = QHBoxLayout()
-        post_row.addWidget(QLabel("Post-Stage:"))
+        post_row.addWidget(QLabel(tr("Post-Stage:")))
         self.combo_post_stage = QComboBox()
         for key, cfg in POST_STAGE_OPTIONS.items():
             self.combo_post_stage.addItem(cfg["label"], key)
         self.combo_post_stage.currentIndexChanged.connect(self._on_post_stage_changed)
         post_row.addWidget(self.combo_post_stage)
         g_bl.addLayout(post_row)
-        self._make_slider(g_bl, 'post_stage_strength', 'Post Strength', default=50,
+        self._make_slider(g_bl, 'post_stage_strength', tr('Post Strength'), default=50,
                           tip='Blend amount for optional restoration or upscale stage')
-        self._make_slider(g_bl, 'post_stage_fidelity', 'Identity Fidelity', default=70,
+        self._make_slider(g_bl, 'post_stage_fidelity', tr('Identity Fidelity'), default=70,
                           tip='Higher values preserve more original face detail')
-        self._make_slider(g_bl, 'post_stage_tile', 'Upscale Tile', max_v=1024, default=512,
+        self._make_slider(g_bl, 'post_stage_tile', tr('Upscale Tile'), max_v=1024, default=512,
                           tip='Real-ESRGAN tile size for large images or video frames')
         t1.addWidget(g_beauty)
 
-        g2 = QGroupBox("Quality"); g2l = QVBoxLayout(g2); g2l.setSpacing(6)
-        self._make_slider(g2l, 'smoothing', 'Warp Smoothing', default=50, tip='Displacement field smoothness')
-        self._make_slider(g2l, 'temporal', 'Temporal Stability', default=50, tip='Landmark jitter reduction (higher=smoother)')
-        self._make_slider(g2l, 'bg_protect', 'Background Protection', default=70, tip='Prevents warping background - blends face region only')
-        self._make_slider(g2l, 'matting_refine', 'Matting Refine', default=0, tip='MODNet portrait matte edge refinement for ROI warp masks')
+        g2 = QGroupBox(tr("Quality")); g2l = QVBoxLayout(g2); g2l.setSpacing(6)
+        self._make_slider(g2l, 'smoothing', tr('Warp Smoothing'), default=50, tip='Displacement field smoothness')
+        self._make_slider(g2l, 'temporal', tr('Temporal Stability'), default=50, tip='Landmark jitter reduction (higher=smoother)')
+        self._make_slider(g2l, 'bg_protect', tr('Background Protection'), default=70, tip='Prevents warping background - blends face region only')
+        self._make_slider(g2l, 'matting_refine', tr('Matting Refine'), default=0, tip='MODNet portrait matte edge refinement for ROI warp masks')
 
         opts_row = QHBoxLayout()
-        self.chk_lm = QCheckBox("Landmarks"); self.chk_lm.toggled.connect(self._tog_lm)
+        self.chk_lm = QCheckBox(tr("Landmarks")); self.chk_lm.toggled.connect(self._tog_lm)
         opts_row.addWidget(self.chk_lm)
-        self.chk_conf = QCheckBox("Confidence"); self.chk_conf.toggled.connect(self._tog_conf)
+        self.chk_conf = QCheckBox(tr("Confidence")); self.chk_conf.toggled.connect(self._tog_conf)
         opts_row.addWidget(self.chk_conf)
-        self.chk_teeth_hint = QCheckBox("Teeth Mask"); self.chk_teeth_hint.toggled.connect(self._tog_teeth_hint)
+        self.chk_teeth_hint = QCheckBox(tr("Teeth Mask")); self.chk_teeth_hint.toggled.connect(self._tog_teeth_hint)
         opts_row.addWidget(self.chk_teeth_hint)
         g2l.addLayout(opts_row)
 
         faces_row = QHBoxLayout()
-        faces_row.addWidget(QLabel("Max Faces:"))
+        faces_row.addWidget(QLabel(tr("Max Faces:")))
         self.spin_faces = QSpinBox(); self.spin_faces.setRange(1, 5); self.spin_faces.setValue(1)
         self.spin_faces.valueChanged.connect(self._on_faces_changed)
         faces_row.addWidget(self.spin_faces); faces_row.addStretch()
-        faces_row.addWidget(QLabel("Preview Scale:"))
+        faces_row.addWidget(QLabel(tr("Preview Scale:")))
         self.combo_scale = QComboBox()
         self.combo_scale.addItems(["100%", "75%", "50%"])
         self.combo_scale.currentIndexChanged.connect(self._on_scale_changed)
@@ -4253,69 +4307,69 @@ class FaceSlimApp(QMainWindow):
         t1.addWidget(g2)
 
         t1.addStretch()
-        tabs.addTab(tab_reshape_scroll, "Reshape")
+        tabs.addTab(tab_reshape_scroll, tr("Reshape"))
 
         # ─── Tab 2: Presets ───
         tab_presets = QWidget()
         t2 = QVBoxLayout(tab_presets); t2.setSpacing(8); t2.setContentsMargins(8,8,8,8)
 
-        g3 = QGroupBox("Built-in Presets"); g3l = QGridLayout(g3); g3l.setSpacing(6)
+        g3 = QGroupBox(tr("Built-in Presets")); g3l = QGridLayout(g3); g3l.setSpacing(6)
         for i, (name, vals) in enumerate(BUILT_IN_PRESETS.items()):
             b = QPushButton(name); b.setProperty("secondary", True)
             b.clicked.connect(lambda _, v=vals: self._apply_preset(v))
             g3l.addWidget(b, i // 2, i % 2)
-        btn_reset = QPushButton("Reset All"); btn_reset.setProperty("danger", True)
+        btn_reset = QPushButton(tr("Reset All")); btn_reset.setProperty("danger", True)
         btn_reset.clicked.connect(lambda: self._apply_preset(DEFAULT_PARAMS.copy()))
         g3l.addWidget(btn_reset, (len(BUILT_IN_PRESETS)) // 2, (len(BUILT_IN_PRESETS)) % 2)
         t2.addWidget(g3)
 
-        g4 = QGroupBox("Custom Presets"); g4l = QVBoxLayout(g4); g4l.setSpacing(6)
+        g4 = QGroupBox(tr("Custom Presets")); g4l = QVBoxLayout(g4); g4l.setSpacing(6)
         self.preset_combo = QComboBox(); self._refresh_presets()
         g4l.addWidget(self.preset_combo)
         pc_row = QHBoxLayout(); pc_row.setSpacing(6)
-        btn_load_preset = QPushButton("Load"); btn_load_preset.setProperty("secondary", True)
+        btn_load_preset = QPushButton(tr("Load")); btn_load_preset.setProperty("secondary", True)
         btn_load_preset.clicked.connect(self._load_custom_preset); pc_row.addWidget(btn_load_preset)
-        btn_save_preset = QPushButton("Save Current"); btn_save_preset.setProperty("success", True)
+        btn_save_preset = QPushButton(tr("Save Current")); btn_save_preset.setProperty("success", True)
         btn_save_preset.clicked.connect(self._save_custom_preset); pc_row.addWidget(btn_save_preset)
-        btn_del_preset = QPushButton("Delete"); btn_del_preset.setProperty("danger", True)
+        btn_del_preset = QPushButton(tr("Delete")); btn_del_preset.setProperty("danger", True)
         btn_del_preset.clicked.connect(self._delete_custom_preset); pc_row.addWidget(btn_del_preset)
         g4l.addLayout(pc_row)
 
         io_row = QHBoxLayout(); io_row.setSpacing(6)
-        btn_export_presets = QPushButton("Export All"); btn_export_presets.setProperty("secondary", True)
+        btn_export_presets = QPushButton(tr("Export All")); btn_export_presets.setProperty("secondary", True)
         btn_export_presets.clicked.connect(self._export_presets); io_row.addWidget(btn_export_presets)
-        btn_import_presets = QPushButton("Import"); btn_import_presets.setProperty("secondary", True)
+        btn_import_presets = QPushButton(tr("Import")); btn_import_presets.setProperty("secondary", True)
         btn_import_presets.clicked.connect(self._import_presets); io_row.addWidget(btn_import_presets)
         g4l.addLayout(io_row)
         t2.addWidget(g4)
         t2.addStretch()
-        tabs.addTab(tab_presets, "Presets")
+        tabs.addTab(tab_presets, tr("Presets"))
 
         # ─── Tab 3: Export ───
         tab_export = QWidget()
         t3 = QVBoxLayout(tab_export); t3.setSpacing(8); t3.setContentsMargins(8,8,8,8)
 
-        g5 = QGroupBox("Single Export"); g5l = QVBoxLayout(g5); g5l.setSpacing(6)
-        self.btn_exp_video = QPushButton("Export Video"); self.btn_exp_video.setProperty("success", True)
+        g5 = QGroupBox(tr("Single Export")); g5l = QVBoxLayout(g5); g5l.setSpacing(6)
+        self.btn_exp_video = QPushButton(tr("Export Video")); self.btn_exp_video.setProperty("success", True)
         self.btn_exp_video.clicked.connect(self.export_video); self.btn_exp_video.setEnabled(False)
         g5l.addWidget(self.btn_exp_video)
-        self.btn_exp_cancel = QPushButton("Cancel Export")
+        self.btn_exp_cancel = QPushButton(tr("Cancel Export"))
         self.btn_exp_cancel.setProperty("danger", True)
         self.btn_exp_cancel.clicked.connect(self._cancel_export)
         self.btn_exp_cancel.setEnabled(False)
         g5l.addWidget(self.btn_exp_cancel)
-        self.btn_exp_img = QPushButton("Save Screenshot (PNG)"); self.btn_exp_img.setProperty("success", True)
+        self.btn_exp_img = QPushButton(tr("Save Screenshot (PNG)")); self.btn_exp_img.setProperty("success", True)
         self.btn_exp_img.clicked.connect(self.save_screenshot); self.btn_exp_img.setEnabled(False)
         g5l.addWidget(self.btn_exp_img)
-        self.btn_exp_gif = QPushButton("Export Before/After GIF")
+        self.btn_exp_gif = QPushButton(tr("Export Before/After GIF"))
         self.btn_exp_gif.clicked.connect(self.export_gif); self.btn_exp_gif.setEnabled(False)
         g5l.addWidget(self.btn_exp_gif)
         exp_opts = QHBoxLayout(); exp_opts.setSpacing(6)
-        self.chk_watermark = QCheckBox("Disclosure watermark")
+        self.chk_watermark = QCheckBox(tr("Disclosure watermark"))
         exp_opts.addWidget(self.chk_watermark)
-        exp_opts.addWidget(QLabel("Video:"))
+        exp_opts.addWidget(QLabel(tr("Video:")))
         self.combo_video_compare = QComboBox()
-        self.combo_video_compare.addItems(["Normal", "Split", "Side-by-side"])
+        self.combo_video_compare.addItems([tr("Normal"), tr("Split"), tr("Side-by-side")])
         exp_opts.addWidget(self.combo_video_compare)
         g5l.addLayout(exp_opts)
         self.exp_prog = QProgressBar(); self.exp_prog.setVisible(False); g5l.addWidget(self.exp_prog)
@@ -4323,16 +4377,16 @@ class FaceSlimApp(QMainWindow):
         g5l.addWidget(self.exp_stat)
         t3.addWidget(g5)
 
-        g6 = QGroupBox("Batch Processing"); g6l = QVBoxLayout(g6); g6l.setSpacing(6)
-        self.btn_batch = QPushButton("Select Files for Batch")
+        g6 = QGroupBox(tr("Batch Processing")); g6l = QVBoxLayout(g6); g6l.setSpacing(6)
+        self.btn_batch = QPushButton(tr("Select Files for Batch"))
         self.btn_batch.clicked.connect(self.start_batch); g6l.addWidget(self.btn_batch)
-        self.btn_batch_folder = QPushButton("Process Entire Folder")
+        self.btn_batch_folder = QPushButton(tr("Process Entire Folder"))
         self.btn_batch_folder.setProperty("secondary", True)
         self.btn_batch_folder.clicked.connect(self.start_batch_folder); g6l.addWidget(self.btn_batch_folder)
-        self.btn_batch_manifest = QPushButton("Run Manifest")
+        self.btn_batch_manifest = QPushButton(tr("Run Manifest"))
         self.btn_batch_manifest.setProperty("secondary", True)
         self.btn_batch_manifest.clicked.connect(self.start_batch_manifest); g6l.addWidget(self.btn_batch_manifest)
-        self.btn_batch_cancel = QPushButton("Cancel Batch"); self.btn_batch_cancel.setProperty("danger", True)
+        self.btn_batch_cancel = QPushButton(tr("Cancel Batch")); self.btn_batch_cancel.setProperty("danger", True)
         self.btn_batch_cancel.clicked.connect(self._cancel_batch); self.btn_batch_cancel.setEnabled(False)
         g6l.addWidget(self.btn_batch_cancel)
         self.batch_prog = QProgressBar(); self.batch_prog.setVisible(False); g6l.addWidget(self.batch_prog)
@@ -4340,14 +4394,14 @@ class FaceSlimApp(QMainWindow):
         g6l.addWidget(self.batch_stat)
         t3.addWidget(g6)
         t3.addStretch()
-        tabs.addTab(tab_export, "Export")
+        tabs.addTab(tab_export, tr("Export"))
 
         rl.addWidget(tabs)
         root.addWidget(rw, 1)
 
         # Status bar
-        self.statusBar().showMessage("Ready - Drop a file or use buttons to start")
-        gpu_text = f"GPU: {GPU_NAME}" if USE_GPU else "CPU Mode"
+        self.statusBar().showMessage(tr("Ready - Drop a file or use buttons to start"))
+        gpu_text = f"{tr('GPU')}: {GPU_NAME}" if USE_GPU else tr("CPU Mode")
         gpu_label = QLabel(f"  {gpu_text}  ")
         gpu_label.setStyleSheet(
             f"color: {'#a6e3a1' if USE_GPU else '#f9e2af'}; font-size: 11px; font-weight: bold; "
@@ -5190,7 +5244,7 @@ def cli_process(args):
 def main():
     parser = argparse.ArgumentParser(
         prog='FaceSlim',
-        description=f'FaceSlim v{VERSION} - AI Face Slimming & Reshaping Suite',
+        description=f"{tr('FaceSlim')} v{VERSION} - {tr('AI Face Slimming & Reshaping Suite')}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -5200,9 +5254,9 @@ Examples:
   python FaceSlim.py --input ./photos/ --output ./results/ --preset Strong
   python FaceSlim.py --input a.mp4 b.jpg --faces 3 --preset "Full Sculpt"
 """)
-    parser.add_argument('--input', '-i', nargs='+', help='Input file(s) or folder(s)')
-    parser.add_argument('--output', '-o', help='Output directory')
-    parser.add_argument('--preset', '-p', help='Apply named preset')
+    parser.add_argument('--input', '-i', nargs='+', help=tr('Input file(s) or folder(s)'))
+    parser.add_argument('--output', '-o', help=tr('Output directory'))
+    parser.add_argument('--preset', '-p', help=tr('Apply named preset'))
     parser.add_argument('--jaw', type=int, help='Jaw slimming (0-100)')
     parser.add_argument('--cheeks', type=int, help='Cheek slimming (0-100)')
     parser.add_argument('--chin', type=int, help='Chin reshape (0-100)')
@@ -5257,29 +5311,33 @@ Examples:
                         help='List model source, license, verification, provider, and cache status')
     parser.add_argument('--redownload-model', choices=["all"] + [cfg["key"] for cfg in all_model_configs()],
                         help='Delete and re-download one model artifact, or all model artifacts')
-    parser.add_argument('--list-presets', action='store_true', help='List available presets')
+    parser.add_argument('--locale', choices=['en', 'pseudo', 'qps'], default=None,
+                        help=tr('Locale override for CLI output and GUI labels'))
+    parser.add_argument('--list-presets', action='store_true', help=tr('List available presets'))
 
     args = parser.parse_args()
+    if args.locale:
+        set_locale(args.locale)
     saved_provider = QSettings("FaceSlim", "FaceSlim").value(
         "onnx_provider", DEFAULT_ONNX_PROVIDER, type=str)
     args.onnx_provider = onnx_provider_key(args.onnx_provider or saved_provider)
 
     if args.list_presets:
-        print(f"\nFaceSlim v{VERSION} - Available Presets:\n")
-        print("Built-in:")
+        print(f"\n{tr('FaceSlim')} v{VERSION} - {tr('Available Presets')}:\n")
+        print(f"{tr('Built-in')}:")
         for name, vals in BUILT_IN_PRESETS.items():
             desc = ', '.join(f"{k}={v}" for k, v in vals.items() if v > 0)
             print(f"  {name:15s} {desc}")
         custom = PresetManager.list_custom()
         if custom:
-            print("\nCustom:")
+            print(f"\n{tr('Custom')}:")
             for name, vals in custom.items():
                 desc = ', '.join(f"{k}={v}" for k, v in vals.items() if v > 0)
                 print(f"  {name:15s} {desc}")
         sys.exit(0)
 
     if args.list_models:
-        print(f"\nFaceSlim v{VERSION} - Model Inventory\n")
+        print(f"\n{tr('FaceSlim')} v{VERSION} - {tr('Model Inventory')}\n")
         print(model_inventory_text(args.onnx_provider))
         sys.exit(0)
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.25.0 - 2026-06-29
+
+- Added localization-ready translation helpers with English default and pseudo-locale modes for UI/CLI QA.
+- Routed main GUI labels, primary controls, tabs, and core CLI headings through the translation layer.
+- Added pseudo-locale overflow guardrail tests and CLI pseudo-locale smoke coverage.
+
 ## FaceSlim v1.24.0 - 2026-06-29
 
 - Added an optional post-stage model lane for GFPGAN face restoration and Real-ESRGAN 2x upscale, defaulting to off.

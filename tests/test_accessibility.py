@@ -31,6 +31,20 @@ class AccessibilityTests(unittest.TestCase):
 
         self.assertEqual([], missing)
 
+    def test_pseudo_locale_main_controls_fit_guardrails(self):
+        self.assertEqual([], faceslim.pseudo_locale_overflow_report())
+
+    def test_pseudo_locale_reaches_main_window_controls(self):
+        previous = faceslim.current_locale()
+        faceslim.set_locale("pseudo")
+        window = faceslim.FaceSlimApp(show_responsible_gate=False)
+        try:
+            self.assertTrue(window.btn_webcam.text().startswith("[!!"))
+            self.assertTrue(window.btn_exp_video.text().startswith("[!!"))
+        finally:
+            window.close()
+            faceslim.set_locale(previous)
+
 
 if __name__ == "__main__":
     unittest.main()

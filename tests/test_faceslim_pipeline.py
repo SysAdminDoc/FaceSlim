@@ -181,6 +181,19 @@ class CliAndManifestTests(unittest.TestCase):
         self.assertIn("FaceSlim v", result.stdout)
         self.assertIn("Glamour", result.stdout)
 
+    def test_list_presets_cli_supports_pseudo_locale(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "FaceSlim_v1.py"), "--locale", "pseudo", "--list-presets"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[!! FaceSlim !!]", result.stdout)
+        self.assertIn("[!! Available Presets !!]", result.stdout)
+
     def test_manifest_parses_defaults_and_per_file_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

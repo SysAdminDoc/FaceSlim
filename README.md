@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.24.0-blue)
+![Version](https://img.shields.io/badge/version-1.25.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -81,6 +81,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Disclosure Watermark | Optional exported media badge declaring AI modification |
 | Responsible-Use Gate | First-launch acknowledgement for consent, disclosure, and platform-rule expectations |
 | Accessibility Metadata | Screen-reader names/descriptions, explicit tab order, and contrast QA coverage |
+| Localization-Ready UI | Main UI/CLI strings route through translation helpers with pseudo-locale overflow tests |
 | Preset System | 9 built-in + unlimited custom presets (JSON) |
 | Before/After GIF | One-click animated comparison export |
 | Drag & Drop | Drop images/videos directly onto the window |
@@ -180,6 +181,7 @@ python FaceSlim_v1.py --input photo.jpg --expression-neutralize 65
 
 # List available presets
 python FaceSlim_v1.py --list-presets
+python FaceSlim_v1.py --locale pseudo --list-presets
 ```
 
 ### CLI Arguments
@@ -230,6 +232,7 @@ python FaceSlim_v1.py --list-presets
 | `--provider-diagnostics` | flag | Show available providers, selected/fallback provider, and one-frame benchmark |
 | `--list-models` | flag | Show model source, license, hash, cache, provider, and verification status |
 | `--redownload-model` | model key or `all` | Delete and re-download a model artifact with hash verification |
+| `--locale` | `en`, `pseudo`, `qps` | Override UI/CLI locale; pseudo modes are for layout QA |
 | `--list-presets` | flag | List all available presets |
 
 ### Batch Manifest
@@ -281,6 +284,7 @@ Custom presets are stored as JSON in:
 
 Slider values persist between sessions via Qt settings. Crash logs are written to `crash.log`; render/export diagnostics are written as JSON lines to `render.log` in the application directory.
 The first GUI launch shows a responsible-use acknowledgement and stores it in Qt settings after acceptance.
+English is the default locale. Set `FACESLIM_LOCALE=pseudo` or pass `--locale pseudo` for pseudo-localized CLI/UI QA; pseudo strings are covered by overflow guardrail tests for the main controls.
 
 Video exports, batch jobs, and CLI processing run a preflight before long renders start. The preflight reports input resolution, frame count or duration, estimated output size, estimated memory and render time, free disk space, output writability, and MP4 writer availability. Jobs with missing input, unsupported media, blocked output paths, unavailable codec support, or insufficient disk are refused with a `render.log` diagnostic entry.
 
