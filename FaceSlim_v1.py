@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.20.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.21.0 - AI Face Slimming & Reshaping Suite
 GPU-accelerated face reshaping with MediaPipe 478-landmark detection,
 PyTorch TPS warping, real-time preview, batch processing, CLI mode,
 image+video support, preset management, and before/after GIF export.
@@ -96,7 +96,7 @@ except Exception:
     GPU_NAME = "CPU"
     print(f"  PyTorch not available - using CPU mode (install torch for GPU acceleration)")
 
-VERSION = "1.20.0"
+VERSION = "1.21.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 RENDER_LOG_PATH = os.path.join(APP_DIR, 'render.log')
 IPTC_DIGITAL_SOURCE_TYPE = "http://cv.iptc.org/newscodes/digitalsourcetype/algorithmicallyEnhanced"
@@ -319,6 +319,193 @@ def ensure_matting_model():
         return True
     return False
 
+
+ONNX_PROVIDER_OPTIONS = {
+    "auto": {"label": "Auto", "provider": None},
+    "cpu": {"label": "CPU", "provider": "CPUExecutionProvider"},
+    "cuda": {"label": "CUDA", "provider": "CUDAExecutionProvider"},
+    "directml": {"label": "DirectML", "provider": "DmlExecutionProvider"},
+}
+DEFAULT_ONNX_PROVIDER = "auto"
+ONNX_AUTO_PROVIDER_ORDER = (
+    "CUDAExecutionProvider",
+    "DmlExecutionProvider",
+    "CPUExecutionProvider",
+)
+
+
+def onnx_provider_key(value=None):
+    if not value:
+        return DEFAULT_ONNX_PROVIDER
+    raw = str(value).strip()
+    lowered = raw.lower()
+    if lowered in ONNX_PROVIDER_OPTIONS:
+        return lowered
+    for key, cfg in ONNX_PROVIDER_OPTIONS.items():
+        if raw == cfg.get("provider"):
+            return key
+    return DEFAULT_ONNX_PROVIDER
+
+
+def onnx_provider_label(value=None):
+    return ONNX_PROVIDER_OPTIONS[onnx_provider_key(value)]["label"]
+
+
+def available_onnx_providers():
+    try:
+        providers = list(ort.get_available_providers())
+    except Exception:
+        providers = []
+    if "CPUExecutionProvider" not in providers:
+        providers.append("CPUExecutionProvider")
+    return providers
+
+
+def resolve_onnx_providers(preference=None, available=None):
+    key = onnx_provider_key(preference)
+    available = list(available if available is not None else available_onnx_providers())
+    if key == "auto":
+        providers = [p for p in ONNX_AUTO_PROVIDER_ORDER if p in available]
+        if not providers and available:
+            providers = [available[0]]
+        selected = providers[0] if providers else None
+        reason = "auto selected first available provider" if selected else "no ONNX providers available"
+    else:
+        requested = ONNX_PROVIDER_OPTIONS[key]["provider"]
+        if requested in available:
+            providers = [requested]
+            if requested != "CPUExecutionProvider" and "CPUExecutionProvider" in available:
+                providers.append("CPUExecutionProvider")
+            selected = requested
+            reason = "override honored"
+        elif "CPUExecutionProvider" in available:
+            providers = ["CPUExecutionProvider"]
+            selected = "CPUExecutionProvider"
+            reason = f"{ONNX_PROVIDER_OPTIONS[key]['label']} unavailable; using CPUExecutionProvider"
+        else:
+            providers = available[:1]
+            selected = providers[0] if providers else None
+            reason = f"{ONNX_PROVIDER_OPTIONS[key]['label']} unavailable; using {selected or 'none'}"
+    return {
+        "preference": key,
+        "preference_label": ONNX_PROVIDER_OPTIONS[key]["label"],
+        "available": available,
+        "providers": providers,
+        "selected_provider": selected,
+        "fallback_reason": reason,
+    }
+
+
+def create_onnx_session(model_path, provider_preference=None, model_label="ONNX model"):
+    resolution = resolve_onnx_providers(provider_preference)
+    providers = resolution["providers"] or ["CPUExecutionProvider"]
+    try:
+        session = ort.InferenceSession(model_path, providers=providers)
+    except Exception as e:
+        if providers != ["CPUExecutionProvider"] and "CPUExecutionProvider" in resolution["available"]:
+            session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            resolution = resolution.copy()
+            resolution["providers"] = ["CPUExecutionProvider"]
+            resolution["selected_provider"] = "CPUExecutionProvider"
+            resolution["fallback_reason"] = (
+                f"{model_label} failed on {providers[0]} ({e}); using CPUExecutionProvider"
+            )
+        else:
+            raise
+    actual = session.get_providers()[0] if session.get_providers() else resolution["selected_provider"]
+    if actual != resolution["selected_provider"]:
+        resolution = resolution.copy()
+        resolution["selected_provider"] = actual
+        resolution["fallback_reason"] = (
+            f"ONNX Runtime selected {actual} instead of {providers[0]}"
+        )
+    return session, resolution
+
+
+def benchmark_onnx_model(model_path, provider_preference=None, model_label="ONNX model", runs=3):
+    session, resolution = create_onnx_session(model_path, provider_preference, model_label)
+    input_name = session.get_inputs()[0].name
+    sample = np.zeros((1, 3, 512, 512), dtype=np.float32)
+    session.run(None, {input_name: sample})
+    timings = []
+    for _ in range(max(1, int(runs))):
+        started = time.perf_counter()
+        session.run(None, {input_name: sample})
+        timings.append((time.perf_counter() - started) * 1000.0)
+    return {
+        "model": model_label,
+        "provider": resolution["selected_provider"],
+        "preference": resolution["preference"],
+        "fallback_reason": resolution["fallback_reason"],
+        "ms_per_frame": sum(timings) / len(timings),
+    }
+
+
+def _model_ready_for_diagnostics(cfg):
+    return validate_model_artifact(_model_path(cfg), cfg)[0]
+
+
+def provider_diagnostics_lines(provider_preference=None, parser_model=None,
+                               run_benchmark=False, ensure_parser=False):
+    pref = onnx_provider_key(provider_preference)
+    parser_key = parser_model_key(parser_model)
+    resolution = resolve_onnx_providers(pref)
+    lines = [
+        "Available ONNX providers: " + (", ".join(resolution["available"]) or "none"),
+        f"Provider preference: {resolution['preference_label']}",
+    ]
+
+    parser_label = parser_model_label(parser_key)
+    parser_ready = parser_model_ready(parser_key)
+    if ensure_parser and not parser_ready:
+        parser_ready = ensure_parsing_model(parser_key)
+    if run_benchmark and parser_ready:
+        try:
+            bench = benchmark_onnx_model(parser_model_path(parser_key), pref, parser_label)
+            lines.append(
+                f"Face parsing ({parser_label}): {bench['provider']}, "
+                f"{bench['ms_per_frame']:.1f} ms/frame, {bench['fallback_reason']}"
+            )
+        except Exception as e:
+            fallback = resolve_onnx_providers(pref)
+            lines.append(
+                f"Face parsing ({parser_label}): benchmark failed ({e}); "
+                f"would select {fallback['selected_provider']}, {fallback['fallback_reason']}"
+            )
+    else:
+        lines.append(
+            f"Face parsing ({parser_label}): "
+            f"{'model ready' if parser_ready else 'model not cached'}, "
+            f"would select {resolution['selected_provider']}, {resolution['fallback_reason']}"
+        )
+
+    matting_ready = _model_ready_for_diagnostics(MATTE_MODEL)
+    if run_benchmark and matting_ready:
+        try:
+            bench = benchmark_onnx_model(MODNET_PATH, pref, MATTE_MODEL["label"])
+            lines.append(
+                f"Matting ({MATTE_MODEL['label']}): {bench['provider']}, "
+                f"{bench['ms_per_frame']:.1f} ms/frame, {bench['fallback_reason']}"
+            )
+        except Exception as e:
+            lines.append(
+                f"Matting ({MATTE_MODEL['label']}): benchmark failed ({e}); "
+                f"would select {resolution['selected_provider']}, {resolution['fallback_reason']}"
+            )
+    else:
+        lines.append(
+            f"Matting ({MATTE_MODEL['label']}): "
+            f"{'model ready' if matting_ready else 'model not cached'}, "
+            f"would select {resolution['selected_provider']}, {resolution['fallback_reason']}"
+        )
+    return lines
+
+
+def provider_diagnostics_text(provider_preference=None, parser_model=None,
+                              run_benchmark=False, ensure_parser=False):
+    return "\n".join(provider_diagnostics_lines(
+        provider_preference, parser_model, run_benchmark, ensure_parser))
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LANDMARK INDICES
 # ═══════════════════════════════════════════════════════════════════════════
@@ -446,22 +633,20 @@ class FaceParsingEngine:
     _STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     _INPUT_SIZE = 512
 
-    def __init__(self, model_key=None):
+    def __init__(self, model_key=None, onnx_provider=None):
         self.model_key = parser_model_key(model_key)
+        self.onnx_provider = onnx_provider_key(onnx_provider)
         if not ensure_parsing_model(self.model_key):
             raise RuntimeError(f"{parser_model_label(self.model_key)} unavailable")
-        available = ort.get_available_providers()
-        providers = []
-        if USE_GPU and 'CUDAExecutionProvider' in available:
-            providers.append('CUDAExecutionProvider')
-        if sys.platform.startswith('win') and 'DmlExecutionProvider' in available:
-            providers.append('DmlExecutionProvider')
-        providers.append('CPUExecutionProvider')
-        providers = [p for p in providers if p in available]
-        self.session = ort.InferenceSession(parser_model_path(self.model_key), providers=providers)
+        self.session, self.provider_resolution = create_onnx_session(
+            parser_model_path(self.model_key), self.onnx_provider, parser_model_label(self.model_key))
         self.input_name = self.session.get_inputs()[0].name
         self._cache = {}  # {(h, w, key): parsing_map}
-        print(f"  Face parsing: {parser_model_label(self.model_key)} loaded ({providers[0]})")
+        print(
+            f"  Face parsing: {parser_model_label(self.model_key)} loaded "
+            f"({self.provider_resolution['selected_provider']}; "
+            f"{self.provider_resolution['fallback_reason']})"
+        )
 
     def parse(self, face_rgb, cache_key=None):
         """Run face parsing on RGB image. Returns (h, w) int array of class labels 0-18."""
@@ -514,22 +699,20 @@ class MattingRefinementEngine:
 
     _INPUT_SIZE = 512
 
-    def __init__(self):
+    def __init__(self, onnx_provider=None):
+        self.onnx_provider = onnx_provider_key(onnx_provider)
         if not ensure_matting_model():
             raise RuntimeError("MODNet matting model unavailable")
-        available = ort.get_available_providers()
-        providers = []
-        if USE_GPU and 'CUDAExecutionProvider' in available:
-            providers.append('CUDAExecutionProvider')
-        if sys.platform.startswith('win') and 'DmlExecutionProvider' in available:
-            providers.append('DmlExecutionProvider')
-        providers.append('CPUExecutionProvider')
-        providers = [p for p in providers if p in available]
-        self.session = ort.InferenceSession(MODNET_PATH, providers=providers)
+        self.session, self.provider_resolution = create_onnx_session(
+            MODNET_PATH, self.onnx_provider, MATTE_MODEL["label"])
         self.input_name = self.session.get_inputs()[0].name
         self.output_names = [o.name for o in self.session.get_outputs()]
         self._cache = {}
-        print(f"  Matting refinement: MODNet loaded ({providers[0]})")
+        print(
+            f"  Matting refinement: MODNet loaded "
+            f"({self.provider_resolution['selected_provider']}; "
+            f"{self.provider_resolution['fallback_reason']})"
+        )
 
     def _preprocess(self, rgb):
         orig_h, orig_w = rgb.shape[:2]
@@ -1427,12 +1610,14 @@ def _manifest_path(base_dir, path_value):
     return path_value if os.path.isabs(path_value) else os.path.abspath(os.path.join(base_dir, path_value))
 
 
-def load_batch_manifest(manifest_path, fallback_output=None, fallback_parser_model=None):
+def load_batch_manifest(manifest_path, fallback_output=None, fallback_parser_model=None,
+                        fallback_onnx_provider=None):
     with open(manifest_path, encoding="utf-8-sig") as f:
         data = json.load(f)
     base_dir = os.path.dirname(os.path.abspath(manifest_path))
     default_params = params_from_preset_and_overrides(data.get("preset"), data.get("params"))
     default_parser_model = parser_model_key(data.get("parser_model") or fallback_parser_model)
+    default_onnx_provider = onnx_provider_key(data.get("onnx_provider") or fallback_onnx_provider)
     default_face_params = data.get("face_params") or {}
     if default_face_params:
         default_params["face_params"] = {int(k) - 1 if str(k).isdigit() else k: v
@@ -1463,12 +1648,14 @@ def load_batch_manifest(manifest_path, fallback_output=None, fallback_parser_mod
             "preserve_metadata": bool(entry.get("preserve_metadata", data.get("preserve_metadata", True))),
             "compare_mode": entry.get("video_compare", data.get("video_compare", "none")),
             "parser_model": parser_model_key(entry.get("parser_model") or default_parser_model),
+            "onnx_provider": onnx_provider_key(entry.get("onnx_provider") or default_onnx_provider),
         })
     return jobs
 
 
 def jobs_from_files(files, output_dir, params, max_faces=1, watermark=False,
-                    preserve_metadata=True, compare_mode='none', parser_model=None):
+                    preserve_metadata=True, compare_mode='none', parser_model=None,
+                    onnx_provider=None):
     return [{
         "input": f,
         "output_dir": output_dir,
@@ -1479,6 +1666,7 @@ def jobs_from_files(files, output_dir, params, max_faces=1, watermark=False,
         "preserve_metadata": preserve_metadata,
         "compare_mode": compare_mode,
         "parser_model": parser_model_key(parser_model),
+        "onnx_provider": onnx_provider_key(onnx_provider),
     } for f in files]
 
 
@@ -1578,8 +1766,9 @@ class OpticalFlowPropagator:
 # FACE WARP ENGINE (GPU + CPU dual path, multi-face)
 # ═══════════════════════════════════════════════════════════════════════════
 class FaceWarpEngine:
-    def __init__(self, mode='video', max_faces=1, parser_model=None):
+    def __init__(self, mode='video', max_faces=1, parser_model=None, onnx_provider=None):
         self.parser_model = parser_model_key(parser_model)
+        self.onnx_provider = onnx_provider_key(onnx_provider)
         rm = vision.RunningMode.VIDEO if mode == 'video' else vision.RunningMode.IMAGE
         opts = vision.FaceLandmarkerOptions(
             base_options=mp_tasks.BaseOptions(model_asset_path=MODEL_PATH),
@@ -1604,7 +1793,7 @@ class FaceWarpEngine:
         self.matter = None
         if ensure_parsing_model(self.parser_model):
             try:
-                self.parser = FaceParsingEngine(self.parser_model)
+                self.parser = FaceParsingEngine(self.parser_model, self.onnx_provider)
             except Exception as e:
                 print(f"  Face parsing init failed: {e} (using landmark fallback)")
                 self.parser = None
@@ -2281,7 +2470,7 @@ class FaceWarpEngine:
         if matting_refine > 0:
             try:
                 if self.matter is None:
-                    self.matter = MattingRefinementEngine()
+                    self.matter = MattingRefinementEngine(self.onnx_provider)
                 matte_key = (lms[:10] / 8.0).astype(np.int16).tobytes()
                 matte = self.matter.matte(roi_crop, cache_key=matte_key)
                 strength = min(max(matting_refine / 100.0, 0.0), 1.0)
@@ -2421,6 +2610,7 @@ class VideoThread(QThread):
         self.params = DEFAULT_PARAMS.copy()
         self.max_faces = 1
         self.parser_model = DEFAULT_PARSER_MODEL
+        self.onnx_provider = DEFAULT_ONNX_PROVIDER
         self.preview_scale = 1.0  # 1.0 = full res, 0.5 = half
         self.virtualcam_enabled = False
         self._seek_seconds = None
@@ -2446,7 +2636,7 @@ class VideoThread(QThread):
         virtual_cam_shape = None
         try:
             self.running = True
-            eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
+            eng = FaceWarpEngine('video', self.max_faces, self.parser_model, self.onnx_provider)
             # Apply temporal beta
             beta = self.params.get('temporal', 50) / 5000.0
             eng.set_temporal_beta(beta)
@@ -2467,7 +2657,7 @@ class VideoThread(QThread):
                     cap.set(cv2.CAP_PROP_POS_MSEC, seek_to * 1000.0)
                     if eng is not None:
                         eng.close()
-                    eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
+                    eng = FaceWarpEngine('video', self.max_faces, self.parser_model, self.onnx_provider)
                     eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
                 if self.paused and seek_to is None:
                     self.msleep(50); continue
@@ -2476,7 +2666,8 @@ class VideoThread(QThread):
                 if not ret:
                     if self.source is not None:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        eng.close(); eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
+                        eng.close(); eng = FaceWarpEngine(
+                            'video', self.max_faces, self.parser_model, self.onnx_provider)
                         eng.set_temporal_beta(self.params.get('temporal', 50) / 5000.0)
                         self.timeline_update.emit(0.0, duration)
                         continue
@@ -2570,13 +2761,14 @@ class ExportThread(QThread):
     status = pyqtSignal(str)
 
     def __init__(self, inp, out, params, max_faces=1, watermark=False,
-                 compare_mode='none', parser_model=None):
+                 compare_mode='none', parser_model=None, onnx_provider=None):
         super().__init__()
         self.inp, self.out, self.params = inp, out, params
         self.max_faces = max_faces
         self.watermark = watermark
         self.compare_mode = compare_mode
         self.parser_model = parser_model_key(parser_model)
+        self.onnx_provider = onnx_provider_key(onnx_provider)
         self.cancelled = False
 
     def cancel(self):
@@ -2598,7 +2790,7 @@ class ExportThread(QThread):
                 })
                 self.error.emit(f"Preflight failed: {msg} (see render.log)")
                 return
-            eng = FaceWarpEngine('video', self.max_faces, self.parser_model)
+            eng = FaceWarpEngine('video', self.max_faces, self.parser_model, self.onnx_provider)
             eng.grid_scale = 6
             cap = cv2.VideoCapture(self.inp)
             if not cap.isOpened():
@@ -2714,7 +2906,7 @@ class BatchThread(QThread):
 
     def __init__(self, files, output_dir, params, max_faces=1, watermark=False,
                  preserve_metadata=True, compare_mode='none', jobs=None,
-                 parser_model=None):
+                 parser_model=None, onnx_provider=None):
         super().__init__()
         self.files = files
         self.output_dir = output_dir
@@ -2725,6 +2917,7 @@ class BatchThread(QThread):
         self.compare_mode = compare_mode
         self.jobs = jobs
         self.parser_model = parser_model_key(parser_model)
+        self.onnx_provider = onnx_provider_key(onnx_provider)
         self.cancelled = False
         self._cancelled_jobs = set()
         self._cancel_lock = threading.Lock()
@@ -2753,7 +2946,7 @@ class BatchThread(QThread):
             jobs = self.jobs or jobs_from_files(self.files, self.output_dir, self.params,
                                                 self.max_faces, self.watermark,
                                                 self.preserve_metadata, self.compare_mode,
-                                                self.parser_model)
+                                                self.parser_model, self.onnx_provider)
             total = len(jobs)
             started_at = time.time()
             self._emit_overall(0, total, started_at)
@@ -2832,7 +3025,8 @@ class BatchThread(QThread):
                 raise ValueError(f"Preflight failed: {msg}")
             self.job_update.emit(index, "Processing", 20, "Reading image", "--")
             eng = FaceWarpEngine('image', job.get("max_faces", self.max_faces),
-                                 job.get("parser_model", self.parser_model))
+                                 job.get("parser_model", self.parser_model),
+                                 job.get("onnx_provider", self.onnx_provider))
             img = cv2.imread(filepath)
             if img is None:
                 raise ValueError(f"Cannot read {filepath}")
@@ -2877,7 +3071,8 @@ class BatchThread(QThread):
                     "preflight": preflight,
                 })
                 raise ValueError(f"Preflight failed: {msg}")
-            eng = FaceWarpEngine('video', max_faces, job.get("parser_model", self.parser_model))
+            eng = FaceWarpEngine('video', max_faces, job.get("parser_model", self.parser_model),
+                                 job.get("onnx_provider", self.onnx_provider))
             eng.grid_scale = 6
             cap = cv2.VideoCapture(filepath)
             if not cap.isOpened():
@@ -3263,6 +3458,25 @@ def accessibility_audit_window(window):
     return missing
 
 
+class ProviderDiagnosticsThread(QThread):
+    diagnostics_ready = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, provider_preference, parser_model):
+        super().__init__()
+        self.provider_preference = onnx_provider_key(provider_preference)
+        self.parser_model = parser_model_key(parser_model)
+
+    def run(self):
+        try:
+            text = provider_diagnostics_text(
+                self.provider_preference, self.parser_model,
+                run_benchmark=True, ensure_parser=True)
+            self.diagnostics_ready.emit(text)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class FaceSlimApp(QMainWindow):
     def __init__(self, show_responsible_gate=True):
         super().__init__()
@@ -3284,6 +3498,8 @@ class FaceSlimApp(QMainWindow):
         self._image_engine = None  # Cached engine for image mode
         self._image_engine_faces = 0
         self._image_engine_parser = DEFAULT_PARSER_MODEL
+        self._image_engine_provider = DEFAULT_ONNX_PROVIDER
+        self._provider_diag_thread = None
         self._build_ui()
         self._load_settings()
         self.history.push(self._p())
@@ -3316,6 +3532,8 @@ class FaceSlimApp(QMainWindow):
             (self.btn_cmp, "A/B compare", "Toggle draggable split before and after comparison."),
             (self.btn_virtualcam, "Virtual camera", "Stream the processed preview to a virtual camera."),
             (self.combo_parser_model, "Parser model", "Choose the BiSeNet face parsing model."),
+            (self.combo_onnx_provider, "ONNX runtime provider", "Choose automatic, CPU, CUDA, or DirectML ONNX inference."),
+            (self.btn_provider_bench, "Benchmark ONNX provider", "Run a one-frame ONNX provider benchmark."),
             (self.chk_lm, "Show landmarks", "Overlay detected face landmarks on the preview."),
             (self.chk_conf, "Show confidence", "Overlay face detection confidence on the preview."),
             (self.chk_teeth_hint, "Show teeth mask", "Overlay the whitening target mask in preview only."),
@@ -3347,7 +3565,8 @@ class FaceSlimApp(QMainWindow):
             self.btn_webcam, self.btn_load, self.btn_stop, self.btn_undo, self.btn_redo,
             self.btn_cmp, self.btn_virtualcam, self.timeline_slider,
             *[slider for slider, _label in self.sliders.values()],
-            self.combo_parser_model, self.chk_lm, self.chk_conf, self.chk_teeth_hint,
+            self.combo_parser_model, self.combo_onnx_provider, self.btn_provider_bench,
+            self.chk_lm, self.chk_conf, self.chk_teeth_hint,
             self.spin_faces, self.combo_scale, self.preset_combo,
             self.btn_exp_video, self.btn_exp_cancel, self.btn_exp_img, self.btn_exp_gif,
             self.chk_watermark, self.combo_video_compare,
@@ -3517,6 +3736,22 @@ class FaceSlimApp(QMainWindow):
         self.parsing_lbl = QLabel("")
         self.parsing_lbl.setStyleSheet("color:#a6e3a1; font-size:10px;")
         g_bl.addWidget(self.parsing_lbl)
+        provider_row = QHBoxLayout()
+        provider_row.addWidget(QLabel("ONNX Provider:"))
+        self.combo_onnx_provider = QComboBox()
+        for key, cfg in ONNX_PROVIDER_OPTIONS.items():
+            self.combo_onnx_provider.addItem(cfg["label"], key)
+        self.combo_onnx_provider.currentIndexChanged.connect(self._on_onnx_provider_changed)
+        provider_row.addWidget(self.combo_onnx_provider)
+        self.btn_provider_bench = QPushButton("Benchmark")
+        self.btn_provider_bench.setProperty("secondary", True)
+        self.btn_provider_bench.clicked.connect(self._benchmark_provider)
+        provider_row.addWidget(self.btn_provider_bench)
+        g_bl.addLayout(provider_row)
+        self.provider_lbl = QLabel("")
+        self.provider_lbl.setWordWrap(True)
+        self.provider_lbl.setStyleSheet("color:#bac2de; font-size:10px;")
+        g_bl.addWidget(self.provider_lbl)
         t1.addWidget(g_beauty)
 
         g2 = QGroupBox("Quality"); g2l = QVBoxLayout(g2); g2l.setSpacing(6)
@@ -3793,6 +4028,11 @@ class FaceSlimApp(QMainWindow):
             return parser_model_key(self.combo_parser_model.currentData())
         return DEFAULT_PARSER_MODEL
 
+    def _onnx_provider_key(self):
+        if hasattr(self, "combo_onnx_provider"):
+            return onnx_provider_key(self.combo_onnx_provider.currentData())
+        return DEFAULT_ONNX_PROVIDER
+
     def _set_parser_model_status(self):
         key = self._parser_model_key()
         ready = parser_model_ready(key)
@@ -3801,6 +4041,14 @@ class FaceSlimApp(QMainWindow):
             + (" ready" if ready else " downloads on first use")
         )
         self.parsing_lbl.setStyleSheet(f"color: {'#a6e3a1' if ready else '#f9e2af'}; font-size: 10px;")
+        self._set_provider_status()
+
+    def _set_provider_status(self, text=None):
+        if text is None:
+            text = provider_diagnostics_text(
+                self._onnx_provider_key(), self._parser_model_key(),
+                run_benchmark=False, ensure_parser=False)
+        self.provider_lbl.setText(text)
 
     def _on_parser_model_changed(self, _idx):
         self._set_parser_model_status()
@@ -3813,6 +4061,40 @@ class FaceSlimApp(QMainWindow):
             self._process_current_image()
         if hasattr(self, "toast"):
             self.toast.show_message(f"Parser: {parser_model_label(self._parser_model_key())}")
+
+    def _on_onnx_provider_changed(self, _idx):
+        self._set_provider_status()
+        if self._image_engine is not None:
+            self._image_engine.close()
+            self._image_engine = None
+        if self.video_thread and self.video_thread.isRunning():
+            self._go(self.video_thread.source)
+        elif self.image_mode:
+            self._process_current_image()
+        if hasattr(self, "toast"):
+            self.toast.show_message(f"ONNX provider: {onnx_provider_label(self._onnx_provider_key())}")
+
+    def _benchmark_provider(self):
+        if self._provider_diag_thread and self._provider_diag_thread.isRunning():
+            return
+        self.btn_provider_bench.setEnabled(False)
+        self._set_provider_status("Benchmarking ONNX provider...")
+        self._provider_diag_thread = ProviderDiagnosticsThread(
+            self._onnx_provider_key(), self._parser_model_key())
+        self._provider_diag_thread.diagnostics_ready.connect(self._on_provider_benchmark_done)
+        self._provider_diag_thread.error.connect(self._on_provider_benchmark_error)
+        self._provider_diag_thread.start()
+
+    def _on_provider_benchmark_done(self, text):
+        self.btn_provider_bench.setEnabled(True)
+        self._set_provider_status(text)
+        self.statusBar().showMessage("ONNX provider benchmark complete")
+        self.toast.show_message("Provider benchmark complete")
+
+    def _on_provider_benchmark_error(self, message):
+        self.btn_provider_bench.setEnabled(True)
+        self._set_provider_status(f"Provider benchmark failed: {message}")
+        self.toast.show_message("Provider benchmark failed", 4000)
 
     # ── Preset Management ───────────────────────────────────────
     def _refresh_presets(self):
@@ -3901,13 +4183,16 @@ class FaceSlimApp(QMainWindow):
         if self.current_original is None: return
         nf = self.spin_faces.value()
         parser_model = self._parser_model_key()
+        onnx_provider = self._onnx_provider_key()
         if (self._image_engine is None or self._image_engine_faces != nf
-                or self._image_engine_parser != parser_model):
+                or self._image_engine_parser != parser_model
+                or self._image_engine_provider != onnx_provider):
             if self._image_engine is not None:
                 self._image_engine.close()
-            self._image_engine = FaceWarpEngine('image', nf, parser_model)
+            self._image_engine = FaceWarpEngine('image', nf, parser_model, onnx_provider)
             self._image_engine_faces = nf
             self._image_engine_parser = parser_model
+            self._image_engine_provider = onnx_provider
         result, faces = self._image_engine.warp_single_image(self.current_original, self._p())
         self.current_processed = result
         self.current_faces = faces
@@ -3934,6 +4219,7 @@ class FaceSlimApp(QMainWindow):
         self.video_thread.show_teeth_hint = self.chk_teeth_hint.isChecked()
         self.video_thread.max_faces = self.spin_faces.value()
         self.video_thread.parser_model = self._parser_model_key()
+        self.video_thread.onnx_provider = self._onnx_provider_key()
         scales = [1.0, 0.75, 0.5]
         self.video_thread.preview_scale = scales[self.combo_scale.currentIndex()]
         self.video_thread.frame_ready.connect(self._on_frame)
@@ -4033,7 +4319,7 @@ class FaceSlimApp(QMainWindow):
         self.btn_exp_video.setEnabled(False); self.btn_exp_cancel.setEnabled(True)
         self._et = ExportThread(self.source_path, out, self._p(), self.spin_faces.value(),
                                 self.chk_watermark.isChecked(), self._video_compare_mode(),
-                                self._parser_model_key())
+                                self._parser_model_key(), self._onnx_provider_key())
         self._et.progress.connect(self.exp_prog.setValue)
         self._et.finished.connect(lambda p: (self.exp_prog.setValue(100),
             self.btn_exp_video.setEnabled(True), self.btn_exp_cancel.setEnabled(False),
@@ -4101,7 +4387,8 @@ class FaceSlimApp(QMainWindow):
         if not manifest:
             return
         try:
-            jobs = load_batch_manifest(manifest, fallback_parser_model=self._parser_model_key())
+            jobs = load_batch_manifest(manifest, fallback_parser_model=self._parser_model_key(),
+                                       fallback_onnx_provider=self._onnx_provider_key())
         except Exception as e:
             self.toast.show_message(f"Manifest error: {e}", 5000)
             return
@@ -4116,7 +4403,8 @@ class FaceSlimApp(QMainWindow):
         if not output_dir: return
         batch_jobs = jobs or jobs_from_files(files, output_dir, self._p(), self.spin_faces.value(),
                                              self.chk_watermark.isChecked(), True,
-                                             self._video_compare_mode(), self._parser_model_key())
+                                             self._video_compare_mode(), self._parser_model_key(),
+                                             self._onnx_provider_key())
         self.batch_prog.setVisible(True); self.batch_prog.setValue(0)
         self.btn_batch.setEnabled(False); self.btn_batch_folder.setEnabled(False); self.btn_batch_manifest.setEnabled(False)
         self.btn_batch_cancel.setEnabled(True)
@@ -4125,7 +4413,7 @@ class FaceSlimApp(QMainWindow):
         self._batch_thread = BatchThread(files, output_dir, self._p(), self.spin_faces.value(),
                                          self.chk_watermark.isChecked(), True,
                                          self._video_compare_mode(), batch_jobs,
-                                         self._parser_model_key())
+                                         self._parser_model_key(), self._onnx_provider_key())
         self._batch_dialog.cancel_job_requested.connect(self._batch_thread.cancel_job)
         self._batch_thread.progress.connect(lambda c, t, f: (
             self.batch_prog.setValue(int(c / t * 100)),
@@ -4174,6 +4462,11 @@ class FaceSlimApp(QMainWindow):
         parser_idx = self.combo_parser_model.findData(saved_parser)
         if parser_idx >= 0:
             self.combo_parser_model.setCurrentIndex(parser_idx)
+        saved_provider = onnx_provider_key(
+            self.settings.value("onnx_provider", DEFAULT_ONNX_PROVIDER, type=str))
+        provider_idx = self.combo_onnx_provider.findData(saved_provider)
+        if provider_idx >= 0:
+            self.combo_onnx_provider.setCurrentIndex(provider_idx)
         self._set_parser_model_status()
 
     def _save_settings(self):
@@ -4184,6 +4477,7 @@ class FaceSlimApp(QMainWindow):
         self.settings.setValue("teeth_hint", self.chk_teeth_hint.isChecked())
         self.settings.setValue("video_compare", self.combo_video_compare.currentIndex())
         self.settings.setValue("parser_model", self._parser_model_key())
+        self.settings.setValue("onnx_provider", self._onnx_provider_key())
 
     def closeEvent(self, e):
         self._save_settings(); self.stop_video()
@@ -4200,6 +4494,7 @@ def cli_process(args):
         print(f"ERROR: Model not available. Download from:\n  {MODEL_URL}")
         sys.exit(1)
     parser_model = parser_model_key(args.parser_model)
+    onnx_provider = onnx_provider_key(getattr(args, "onnx_provider", DEFAULT_ONNX_PROVIDER))
     ensure_parsing_model(parser_model)  # Non-fatal - falls back to landmark mask
     overrides = {k: getattr(args, k) for k in CLI_PARAM_KEYS
                  if hasattr(args, k) and getattr(args, k) is not None}
@@ -4215,7 +4510,7 @@ def cli_process(args):
     max_faces = args.faces or 1
 
     if args.manifest:
-        jobs = load_batch_manifest(args.manifest, args.output, parser_model)
+        jobs = load_batch_manifest(args.manifest, args.output, parser_model, onnx_provider)
         inputs = [job["input"] for job in jobs]
     else:
         inputs = media_files_from_paths(args.input)
@@ -4228,10 +4523,12 @@ def cli_process(args):
     os.makedirs(output_dir, exist_ok=True)
     if jobs is None:
         jobs = jobs_from_files(inputs, output_dir, params, max_faces, args.watermark,
-                               not args.strip_metadata, args.video_compare, parser_model)
+                               not args.strip_metadata, args.video_compare, parser_model,
+                               onnx_provider)
 
     print(f"\nFaceSlim v{VERSION} - CLI Mode")
     print(f"  GPU: {'ON (' + GPU_NAME + ')' if USE_GPU else 'OFF'}")
+    print(f"  ONNX Provider: {onnx_provider_label(onnx_provider)}")
     print(f"  Files: {len(inputs)}")
     print(f"  Params: {json.dumps({k: v for k, v in params.items() if v != 0}, indent=2)}")
     print(f"  Output: {output_dir}\n")
@@ -4245,6 +4542,7 @@ def cli_process(args):
         preserve_metadata = job.get("preserve_metadata", not args.strip_metadata)
         compare_mode = job.get("compare_mode", args.video_compare)
         parser_model = job.get("parser_model", parser_model)
+        onnx_provider = job.get("onnx_provider", onnx_provider)
         fname = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
         print(f"  [{i+1}/{len(jobs)}] {fname}")
@@ -4268,7 +4566,7 @@ def cli_process(args):
                     })
                     failed += 1
                     continue
-                eng = FaceWarpEngine('image', max_faces, parser_model)
+                eng = FaceWarpEngine('image', max_faces, parser_model, onnx_provider)
                 img = cv2.imread(filepath)
                 if img is None: raise ValueError("Cannot read image")
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -4295,7 +4593,7 @@ def cli_process(args):
                     })
                     failed += 1
                     continue
-                eng = FaceWarpEngine('video', max_faces, parser_model)
+                eng = FaceWarpEngine('video', max_faces, parser_model, onnx_provider)
                 eng.grid_scale = 6
                 cap = cv2.VideoCapture(filepath)
                 if not cap.isOpened(): raise ValueError("Cannot open video")
@@ -4414,9 +4712,16 @@ Examples:
                         help='Export processed video normally, split-screen, or side-by-side')
     parser.add_argument('--parser-model', choices=list(PARSER_MODELS.keys()), default=DEFAULT_PARSER_MODEL,
                         help='Face parsing model for beauty masks')
+    parser.add_argument('--onnx-provider', choices=list(ONNX_PROVIDER_OPTIONS.keys()), default=None,
+                        help='ONNX Runtime provider override (default: saved setting or auto)')
+    parser.add_argument('--provider-diagnostics', action='store_true',
+                        help='Show ONNX provider availability, fallback, and one-frame benchmark')
     parser.add_argument('--list-presets', action='store_true', help='List available presets')
 
     args = parser.parse_args()
+    saved_provider = QSettings("FaceSlim", "FaceSlim").value(
+        "onnx_provider", DEFAULT_ONNX_PROVIDER, type=str)
+    args.onnx_provider = onnx_provider_key(args.onnx_provider or saved_provider)
 
     if args.list_presets:
         print(f"\nFaceSlim v{VERSION} - Available Presets:\n")
@@ -4430,6 +4735,13 @@ Examples:
             for name, vals in custom.items():
                 desc = ', '.join(f"{k}={v}" for k, v in vals.items() if v > 0)
                 print(f"  {name:15s} {desc}")
+        sys.exit(0)
+
+    if args.provider_diagnostics:
+        print(f"\nFaceSlim v{VERSION} - ONNX Provider Diagnostics\n")
+        print(provider_diagnostics_text(
+            args.onnx_provider, args.parser_model,
+            run_benchmark=True, ensure_parser=True))
         sys.exit(0)
 
     if not ensure_model():

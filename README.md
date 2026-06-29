@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.20.0-blue)
+![Version](https://img.shields.io/badge/version-1.21.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -57,6 +57,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Parser Model Selector | Toggle BiSeNet ResNet18 or ResNet34 ONNX masks in Settings/CLI |
 | MODNet Matting Refinement | Optional portrait matte edge refinement for ROI warp masks |
 | Background Protection | ROI-isolated warp + seamless clone composite |
+| Runtime Provider Selector | Persisted ONNX Runtime Auto/CPU/CUDA/DirectML override with diagnostics and one-frame benchmark |
 | Temporal Mask Smoothing | EMA filter prevents parsing mask flicker on video |
 | Optical Flow Propagation | Warp displacement propagation between TPS keyframes |
 | GPU Acceleration | PyTorch TPS warping on CUDA (auto-detected) |
@@ -156,6 +157,10 @@ python FaceSlim_v1.py --input video.mp4 --preset Glamour --video-compare split -
 # Higher-quality parser model
 python FaceSlim_v1.py --input photo.jpg --parser-model bisenet_resnet34 --skin-smooth 35
 
+# Force CPU ONNX inference or inspect available providers
+python FaceSlim_v1.py --input photo.jpg --onnx-provider cpu --skin-smooth 35
+python FaceSlim_v1.py --provider-diagnostics --onnx-provider auto
+
 # Cleaner face/background boundary on strong warps
 python FaceSlim_v1.py --input photo.jpg --jaw 45 --matting-refine 70
 
@@ -206,6 +211,8 @@ python FaceSlim_v1.py --list-presets
 | `--strip-metadata` | flag | Do not preserve source image EXIF/XMP/ICC metadata |
 | `--video-compare` | `none`, `split`, `side_by_side` | Export processed, split-screen, or side-by-side video |
 | `--parser-model` | `bisenet_resnet18`, `bisenet_resnet34` | Face parsing model for beauty masks |
+| `--onnx-provider` | `auto`, `cpu`, `cuda`, `directml` | ONNX Runtime provider override |
+| `--provider-diagnostics` | flag | Show available providers, selected/fallback provider, and one-frame benchmark |
 | `--list-presets` | flag | List all available presets |
 
 ### Batch Manifest
@@ -259,6 +266,10 @@ Slider values persist between sessions via Qt settings. Crash logs are written t
 The first GUI launch shows a responsible-use acknowledgement and stores it in Qt settings after acceptance.
 
 Video exports, batch jobs, and CLI processing run a preflight before long renders start. The preflight reports input resolution, frame count or duration, estimated output size, estimated memory and render time, free disk space, output writability, and MP4 writer availability. Jobs with missing input, unsupported media, blocked output paths, unavailable codec support, or insufficient disk are refused with a `render.log` diagnostic entry.
+
+## Runtime Providers
+
+FaceSlim can run ONNX face parsing and matting models through Auto, CPU, CUDA, or DirectML. The GUI provider selector persists in Qt settings and the CLI can override it with `--onnx-provider`. If the requested provider is unavailable or fails to initialize for a model, FaceSlim falls back to `CPUExecutionProvider` and reports the fallback reason. Use the GUI **Benchmark** button or `--provider-diagnostics` to list available providers, the selected provider for BiSeNet and MODNet, and a one-frame benchmark.
 
 ## Provenance Metadata
 

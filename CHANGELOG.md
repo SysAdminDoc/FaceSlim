@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.21.0 - 2026-06-29
+
+- Added a persisted ONNX Runtime provider selector for Auto, CPU, CUDA, and DirectML.
+- Added GUI and CLI provider diagnostics with available providers, selected/fallback provider, and one-frame benchmark output.
+- Routed parser and matting ONNX sessions through a shared provider resolver with CPU fallback on unavailable or failed provider overrides.
+
 ## FaceSlim v1.20.0 - 2026-06-28
 
 - Added shared media preflight checks for video export, batch jobs, and CLI processing.

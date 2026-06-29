@@ -64,6 +64,42 @@ class ModelManifestTests(unittest.TestCase):
             self.assertIn("sha256", reason)
 
 
+class RuntimeProviderTests(unittest.TestCase):
+    def test_provider_override_falls_back_to_cpu_when_unavailable(self):
+        resolution = faceslim.resolve_onnx_providers(
+            "cuda",
+            available=["CPUExecutionProvider"],
+        )
+
+        self.assertEqual(resolution["preference"], "cuda")
+        self.assertEqual(resolution["providers"], ["CPUExecutionProvider"])
+        self.assertEqual(resolution["selected_provider"], "CPUExecutionProvider")
+        self.assertIn("unavailable", resolution["fallback_reason"])
+
+    def test_directml_override_places_cpu_fallback_second(self):
+        resolution = faceslim.resolve_onnx_providers(
+            "directml",
+            available=["DmlExecutionProvider", "CPUExecutionProvider"],
+        )
+
+        self.assertEqual(resolution["providers"], ["DmlExecutionProvider", "CPUExecutionProvider"])
+        self.assertEqual(resolution["selected_provider"], "DmlExecutionProvider")
+        self.assertEqual(resolution["fallback_reason"], "override honored")
+
+    def test_provider_diagnostics_lists_models_without_benchmark(self):
+        text = faceslim.provider_diagnostics_text(
+            "cpu",
+            faceslim.DEFAULT_PARSER_MODEL,
+            run_benchmark=False,
+            ensure_parser=False,
+        )
+
+        self.assertIn("Available ONNX providers", text)
+        self.assertIn("Provider preference: CPU", text)
+        self.assertIn("Face parsing", text)
+        self.assertIn("Matting", text)
+
+
 class CliAndManifestTests(unittest.TestCase):
     def test_list_presets_cli_exits_without_model_download(self):
         result = subprocess.run(
@@ -86,6 +122,7 @@ class CliAndManifestTests(unittest.TestCase):
                 json.dumps({
                     "preset": "Beauty",
                     "parser_model": "bisenet_resnet34",
+                    "onnx_provider": "cpu",
                     "faces": 3,
                     "watermark": True,
                     "files": [{
@@ -104,6 +141,7 @@ class CliAndManifestTests(unittest.TestCase):
             self.assertEqual(jobs[0]["max_faces"], 3)
             self.assertTrue(jobs[0]["watermark"])
             self.assertEqual(jobs[0]["parser_model"], "bisenet_resnet34")
+            self.assertEqual(jobs[0]["onnx_provider"], "cpu")
             self.assertEqual(jobs[0]["params"]["jaw"], 22)
             self.assertEqual(jobs[0]["params"]["face_params"][1]["cheeks"], 18)
             self.assertTrue(jobs[0]["input"].endswith("input.jpg"))

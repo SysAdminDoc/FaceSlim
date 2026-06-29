@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility launcher for FaceSlim v1.20.0."""
+"""Compatibility launcher for FaceSlim v1.21.0."""
 
 import multiprocessing
 
