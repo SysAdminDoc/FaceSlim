@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.21.0-blue)
+![Version](https://img.shields.io/badge/version-1.22.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -74,6 +74,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Large-Media Preflight | Checks resolution, frame count, estimates, disk space, output writability, and MP4 codec support before long renders |
 | CLI Mode | Headless with presets and per-param control |
 | Docker CLI Image | Headless container build for farm rendering |
+| Compatibility Upgrade Lane | Local Python 3.12+ dependency canary with current PyPI comparison |
 | Metadata Preservation | Image exports preserve source EXIF/ICC metadata by default and embed FaceSlim provenance |
 | Disclosure Watermark | Optional exported media badge declaring AI modification |
 | Responsible-Use Gate | First-launch acknowledgement for consent, disclosure, and platform-rule expectations |
@@ -309,6 +310,25 @@ Run the local regression suite with:
 ```bash
 python -m unittest discover -s tests
 ```
+
+Run the dependency upgrade lane with:
+
+```bash
+python tools/check_compatibility.py --online
+py -3.12 tools/check_compatibility.py --canary --python-version 3.12 --requirements requirements-docker.txt
+py -3.12 tools/check_compatibility.py --canary --python-version 3.12 --allow-blocked
+```
+
+Compatibility matrix:
+
+| Lane | Status | Notes |
+|------|--------|-------|
+| Python 3.11 | Release/build host | Normal local tests and PyInstaller build run here. |
+| Python 3.12 | Upgrade lane | `requirements-docker.txt` resolves on 3.12; `requirements-upgrade-canary.txt` verifies latest MediaPipe, NumPy, SciPy, Pillow, OpenCV, and the newest ONNX Runtime import canary that passes locally before pins move. |
+| Python 3.13 | Watch | Do not claim support until MediaPipe, PyQt, ONNX Runtime, and PyInstaller smokes pass. |
+| Python 3.14 | Experimental | Interpreter exists locally, but package ABI coverage and release behavior are still moving. |
+
+Current blockers before bumping runtime pins: ONNX Runtime 1.27.0 fails the Python 3.12 import smoke on this machine with a DLL initialization error, full GUI/PyInstaller smoke must pass on the canary set, and MediaPipe task behavior must be checked against the current face landmarker API after the dependency upgrade.
 
 The Windows executable is emitted at `dist/FaceSlim.exe`. The spec includes a multiprocessing freeze guard to prevent frozen MediaPipe/OpenCV worker relaunch loops.
 

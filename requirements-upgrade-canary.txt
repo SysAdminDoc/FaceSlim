@@ -1,0 +1,7 @@
+PyQt5==5.15.11
+opencv-python-headless==4.13.0.92
+mediapipe==0.10.35
+numpy==2.5.0
+scipy==1.18.0
+Pillow==12.2.0
+onnxruntime==1.27.0

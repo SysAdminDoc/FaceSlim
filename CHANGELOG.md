@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.22.0 - 2026-06-29
+
+- Added `requirements-upgrade-canary.txt` for a Python 3.12+ dependency upgrade lane.
+- Added `tools/check_compatibility.py` to compare current pins against PyPI and run an isolated canary import smoke.
+- Documented the Python compatibility matrix and blockers before bumping runtime pins.
+
 ## FaceSlim v1.21.0 - 2026-06-29
 
 - Added a persisted ONNX Runtime provider selector for Auto, CPU, CUDA, and DirectML.
