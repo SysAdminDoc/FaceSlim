@@ -1,5 +1,11 @@
 # Changelog
 
+## FaceSlim v1.26.0 - 2026-06-29
+
+- Split the legacy monolithic implementation into importable `faceslim` package modules for runtime/i18n, models, pipeline, exporters, UI, and CLI.
+- Kept `FaceSlim_v1.py` as a compatibility launcher/re-export surface while preserving existing GUI and CLI commands.
+- Added module-boundary regression coverage and updated Docker packaging to copy the new package.
+
 ## FaceSlim v1.25.0 - 2026-06-29
 
 - Added localization-ready translation helpers with English default and pseudo-locale modes for UI/CLI QA.

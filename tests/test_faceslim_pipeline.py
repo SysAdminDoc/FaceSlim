@@ -1,4 +1,5 @@
 import hashlib
+import importlib
 import json
 import os
 import subprocess
@@ -16,6 +17,9 @@ import FaceSlim_v1 as faceslim
 
 
 ROOT = Path(__file__).resolve().parents[1]
+cli_module = importlib.import_module("faceslim.cli")
+exporter_module = importlib.import_module("faceslim.exporters")
+runtime_module = importlib.import_module("faceslim.runtime")
 
 
 class DummyEngine:
@@ -62,6 +66,22 @@ class ModelManifestTests(unittest.TestCase):
 
             self.assertFalse(ok)
             self.assertIn("sha256", reason)
+
+
+class ModuleBoundaryTests(unittest.TestCase):
+    def test_modular_import_surfaces_are_available(self):
+        modules = {
+            "faceslim.models": "validate_model_artifact",
+            "faceslim.pipeline": "FaceWarpEngine",
+            "faceslim.exporters": "BatchThread",
+            "faceslim.ui": "FaceSlimApp",
+            "faceslim.cli": "cli_process",
+            "faceslim.i18n": "tr",
+        }
+
+        for module_name, symbol in modules.items():
+            module = importlib.import_module(module_name)
+            self.assertTrue(hasattr(module, symbol), f"{module_name}.{symbol}")
 
 
 class ModelInventoryTests(unittest.TestCase):
@@ -246,8 +266,9 @@ class CliAndManifestTests(unittest.TestCase):
 
 class BatchPipelineTests(unittest.TestCase):
     def _with_temp_render_log(self, tmp_path):
-        old_path = faceslim.RENDER_LOG_PATH
-        faceslim.RENDER_LOG_PATH = str(Path(tmp_path) / "render.log")
+        old_path = runtime_module.RENDER_LOG_PATH
+        runtime_module.RENDER_LOG_PATH = str(Path(tmp_path) / "render.log")
+        faceslim.RENDER_LOG_PATH = runtime_module.RENDER_LOG_PATH
         return old_path
 
     def test_unsupported_media_job_reports_failure(self):
@@ -278,6 +299,7 @@ class BatchPipelineTests(unittest.TestCase):
 
                 thread.run()
             finally:
+                runtime_module.RENDER_LOG_PATH = old_log
                 faceslim.RENDER_LOG_PATH = old_log
 
             self.assertEqual(done[-1], (0, 1, 0))
@@ -287,8 +309,8 @@ class BatchPipelineTests(unittest.TestCase):
     def test_cli_failure_logs_and_exits_nonzero(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_log = self._with_temp_render_log(tmp)
-            old_ensure_model = faceslim.ensure_model
-            old_ensure_parsing = faceslim.ensure_parsing_model
+            old_ensure_model = cli_module.ensure_model
+            old_ensure_parsing = cli_module.ensure_parsing_model
             text_path = Path(tmp) / "notes.txt"
             text_path.write_text("not media", encoding="utf-8")
             args = SimpleNamespace(
@@ -305,13 +327,14 @@ class BatchPipelineTests(unittest.TestCase):
                 video_compare="none",
             )
             try:
-                faceslim.ensure_model = lambda: True
-                faceslim.ensure_parsing_model = lambda _model: True
+                cli_module.ensure_model = lambda: True
+                cli_module.ensure_parsing_model = lambda _model: True
                 with self.assertRaises(SystemExit) as raised:
                     faceslim.cli_process(args)
             finally:
-                faceslim.ensure_model = old_ensure_model
-                faceslim.ensure_parsing_model = old_ensure_parsing
+                cli_module.ensure_model = old_ensure_model
+                cli_module.ensure_parsing_model = old_ensure_parsing
+                runtime_module.RENDER_LOG_PATH = old_log
                 faceslim.RENDER_LOG_PATH = old_log
 
             self.assertEqual(raised.exception.code, 1)
@@ -323,8 +346,8 @@ class BatchPipelineTests(unittest.TestCase):
             image_path = tmp_path / "input.png"
             output_path = tmp_path / "out" / "slimmed.png"
             cv2.imwrite(str(image_path), np.full((16, 16, 3), 160, dtype=np.uint8))
-            original_engine = faceslim.FaceWarpEngine
-            faceslim.FaceWarpEngine = DummyEngine
+            original_engine = exporter_module.FaceWarpEngine
+            exporter_module.FaceWarpEngine = DummyEngine
             try:
                 thread = faceslim.BatchThread(
                     [str(image_path)],
@@ -341,7 +364,7 @@ class BatchPipelineTests(unittest.TestCase):
                     "parser_model": faceslim.DEFAULT_PARSER_MODEL,
                 }, 0)
             finally:
-                faceslim.FaceWarpEngine = original_engine
+                exporter_module.FaceWarpEngine = original_engine
 
             self.assertTrue(ok)
             self.assertTrue(output_path.exists())
@@ -440,8 +463,8 @@ class MediaPreflightTests(unittest.TestCase):
             output_dir = tmp_path / "blocked_output.png"
             output_dir.mkdir()
             cv2.imwrite(str(image_path), np.full((8, 8, 3), 120, dtype=np.uint8))
-            original_engine = faceslim.FaceWarpEngine
-            faceslim.FaceWarpEngine = lambda *args, **kwargs: (_ for _ in ()).throw(
+            original_engine = exporter_module.FaceWarpEngine
+            exporter_module.FaceWarpEngine = lambda *args, **kwargs: (_ for _ in ()).throw(
                 AssertionError("engine should not start after failed preflight")
             )
             try:
@@ -461,7 +484,7 @@ class MediaPreflightTests(unittest.TestCase):
                         "parser_model": faceslim.DEFAULT_PARSER_MODEL,
                     }, 0)
             finally:
-                faceslim.FaceWarpEngine = original_engine
+                exporter_module.FaceWarpEngine = original_engine
 
             self.assertIn("Preflight failed", str(raised.exception))
 

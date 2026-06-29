@@ -1,6 +1,6 @@
 # FaceSlim
 
-![Version](https://img.shields.io/badge/version-1.25.0-blue)
+![Version](https://img.shields.io/badge/version-1.26.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -82,6 +82,7 @@ On first launch, FaceSlim downloads the face landmarker (~3.7 MB), the selected 
 | Responsible-Use Gate | First-launch acknowledgement for consent, disclosure, and platform-rule expectations |
 | Accessibility Metadata | Screen-reader names/descriptions, explicit tab order, and contrast QA coverage |
 | Localization-Ready UI | Main UI/CLI strings route through translation helpers with pseudo-locale overflow tests |
+| Modular Package Layout | Model management, pipeline, exporters, UI, and CLI entry points live under `faceslim/` |
 | Preset System | 9 built-in + unlimited custom presets (JSON) |
 | Before/After GIF | One-click animated comparison export |
 | Drag & Drop | Drop images/videos directly onto the window |

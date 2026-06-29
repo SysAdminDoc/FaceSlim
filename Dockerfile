@@ -35,6 +35,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements-docker.txt
 
 COPY FaceSlim.py FaceSlim_v1.py runtime_hook_mp.py ./
+COPY faceslim ./faceslim
 COPY icon.png ./
 
 VOLUME ["/data"]
