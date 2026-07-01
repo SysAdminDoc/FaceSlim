@@ -1,5 +1,20 @@
 # Changelog
 
+## FaceSlim v1.27.0 - 2026-07-01
+
+- Fixed CLI batch processing where per-job params, max_faces, parser_model, and onnx_provider leaked between jobs — subsequent jobs inherited settings from earlier jobs when they lacked explicit overrides.
+- Fixed video export and batch video processing silently exporting 0 frames when container format reported unknown frame count (CAP_PROP_FRAME_COUNT ≤ 0).
+- Fixed OneEuroFilter ignoring timestamp `t=0` by using truthiness instead of None check, causing frequency drift on the first processed frame.
+- Fixed NaN/non-finite FPS from cv2 VideoCapture causing crashes or infinite loops in preview, export, batch, and CLI video paths.
+- Added parameter clamping (0–100, 0–1024 for tile size) to CLI and manifest overrides to prevent out-of-range values causing visual corruption.
+- Added path sanitization to PresetManager.delete matching the existing save sanitization.
+- Added user feedback for unsupported dropped files and failed image loads.
+- Added missing file extensions (.flv, .m4v, .tif) to GUI file dialogs.
+- Removed unused jax, jaxlib, and opencv-contrib-python from requirements.txt.
+- Added explicit UTF-8 encoding to all file I/O operations.
+- Deduplicated FACE_OVAL (was identical copy of JAW_CONTOUR).
+- Removed unused variable and orphaned comment.
+
 ## FaceSlim v1.26.0 - 2026-06-29
 
 - Split the legacy monolithic implementation into importable `faceslim` package modules for runtime/i18n, models, pipeline, exporters, UI, and CLI.

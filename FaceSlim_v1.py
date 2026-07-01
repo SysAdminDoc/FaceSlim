@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceSlim v1.26.0 - AI Face Slimming & Reshaping Suite
+FaceSlim v1.27.0 - AI Face Slimming & Reshaping Suite
 Compatibility launcher for the modular FaceSlim package.
 """
 
