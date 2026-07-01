@@ -530,9 +530,9 @@ class BatchThread(QThread):
             if not writer.isOpened():
                 raise ValueError(f"Cannot open output writer: {out_path}")
             has_fx = has_effective_processing(params)
-            total = max(total, 1)
             started_at = time.time()
-            for frame_idx in range(total):
+            frame_idx = 0
+            while True:
                 if self.cancelled or self._job_cancelled(index):
                     return False
                 ret, frame = cap.read()
@@ -544,14 +544,16 @@ class BatchThread(QThread):
                 proc = compose_compare_frame(rgb, proc, compare_mode)
                 proc = apply_disclosure_watermark(proc, watermark)
                 writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
-                pct = int(((frame_idx + 1) / total) * 100)
-                if frame_idx == 0 or frame_idx == total - 1 or frame_idx % max(1, total // 50) == 0:
-                    elapsed = time.time() - started_at
-                    eta = "--"
-                    if frame_idx > 0:
-                        eta = format_duration((elapsed / (frame_idx + 1)) * (total - frame_idx - 1))
-                    self.job_update.emit(index, "Processing", pct,
-                                         f"Frame {frame_idx + 1}/{total}", eta)
+                frame_idx += 1
+                if total > 0:
+                    pct = int(frame_idx / total * 100)
+                    if frame_idx == 1 or frame_idx == total or frame_idx % max(1, total // 50) == 0:
+                        elapsed = time.time() - started_at
+                        eta = "--"
+                        if frame_idx > 1:
+                            eta = format_duration((elapsed / frame_idx) * (total - frame_idx))
+                        self.job_update.emit(index, "Processing", pct,
+                                             f"Frame {frame_idx}/{total}", eta)
             return True
         finally:
             if cap is not None:

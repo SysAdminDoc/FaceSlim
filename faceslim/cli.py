@@ -145,7 +145,8 @@ def cli_process(args):
                     raise ValueError(f"Cannot open output writer: {out_path}")
                 has_fx = has_effective_processing(job_params)
                 t0 = time.time()
-                for fi in range(total):
+                fi = 0
+                while True:
                     ret, frame = cap.read()
                     if not ret: break
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -154,14 +155,15 @@ def cli_process(args):
                     proc = compose_compare_frame(rgb, proc, compare_mode)
                     proc = apply_disclosure_watermark(proc, watermark)
                     writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
-                    if fi % 30 == 0 and fi > 0:
+                    fi += 1
+                    if total > 0 and fi % 30 == 0:
                         eta = ((time.time() - t0) / fi) * (total - fi)
                         print(f"\r  [{i+1}/{len(jobs)}] {fname}... {fi}/{total} frames (ETA: {int(eta)}s)", end='', flush=True)
                 cap.release(); cap = None
                 writer.release(); writer = None
                 eng.close(); eng = None
                 elapsed = time.time() - t0
-                print(f"\r  [{i+1}/{len(jobs)}] {fname}... OK ({total} frames, {elapsed:.1f}s)")
+                print(f"\r  [{i+1}/{len(jobs)}] {fname}... OK ({fi} frames, {elapsed:.1f}s)")
                 processed += 1
             else:
                 print(f"    SKIP (unsupported)")
