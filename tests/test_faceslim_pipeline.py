@@ -263,6 +263,35 @@ class CliAndManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             faceslim.parse_face_overrides(face_params=["1:not-a-param=5"])
 
+    def test_param_overrides_clamp_to_valid_range(self):
+        overrides = faceslim.coerce_param_overrides({"jaw": 200, "cheeks": -5})
+
+        self.assertEqual(overrides["jaw"], 100)
+        self.assertEqual(overrides["cheeks"], 0)
+
+    def test_param_overrides_allow_tile_up_to_1024(self):
+        overrides = faceslim.coerce_param_overrides({"post_stage_tile": 768})
+
+        self.assertEqual(overrides["post_stage_tile"], 768)
+
+    def test_cli_batch_jobs_do_not_leak_params_between_iterations(self):
+        jobs = [
+            {"input": "a.jpg", "params": {"jaw": 99}, "max_faces": 4,
+             "parser_model": "bisenet_resnet34", "onnx_provider": "cpu"},
+            {"input": "b.jpg"},
+        ]
+        base_params = faceslim.DEFAULT_PARAMS.copy()
+
+        job0_params = jobs[0].get("params", base_params)
+        job0_faces = jobs[0].get("max_faces", 1)
+        job1_params = jobs[1].get("params", base_params)
+        job1_faces = jobs[1].get("max_faces", 1)
+
+        self.assertEqual(job0_params["jaw"], 99)
+        self.assertEqual(job0_faces, 4)
+        self.assertEqual(job1_params["jaw"], 0)
+        self.assertEqual(job1_faces, 1)
+
 
 class BatchPipelineTests(unittest.TestCase):
     def _with_temp_render_log(self, tmp_path):

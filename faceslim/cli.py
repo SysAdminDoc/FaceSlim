@@ -71,13 +71,13 @@ def cli_process(args):
     processed = failed = 0
     for i, job in enumerate(jobs):
         filepath = job["input"]
-        params = job.get("params", params)
-        max_faces = job.get("max_faces", max_faces)
+        job_params = job.get("params", params)
+        job_max_faces = job.get("max_faces", max_faces)
         watermark = job.get("watermark", args.watermark)
         preserve_metadata = job.get("preserve_metadata", not args.strip_metadata)
         compare_mode = job.get("compare_mode", args.video_compare)
-        parser_model = job.get("parser_model", parser_model)
-        onnx_provider = job.get("onnx_provider", onnx_provider)
+        job_parser_model = job.get("parser_model", parser_model)
+        job_onnx_provider = job.get("onnx_provider", onnx_provider)
         fname = os.path.basename(filepath)
         ext = os.path.splitext(filepath)[1].lower()
         print(f"  [{i+1}/{len(jobs)}] {fname}")
@@ -88,7 +88,7 @@ def cli_process(args):
         try:
             if ext in IMAGE_EXTS:
                 out_path = media_job_output_path(job, output_dir, filepath, ".png")
-                preflight = preflight_media_job(filepath, out_path, compare_mode, params)
+                preflight = preflight_media_job(filepath, out_path, compare_mode, job_params)
                 print(f"    {format_preflight_summary(preflight)}")
                 if not preflight["ok"]:
                     msg = preflight_failure_message(preflight)
@@ -101,11 +101,11 @@ def cli_process(args):
                     })
                     failed += 1
                     continue
-                eng = FaceWarpEngine('image', max_faces, parser_model, onnx_provider)
+                eng = FaceWarpEngine('image', job_max_faces, job_parser_model, job_onnx_provider)
                 img = cv2.imread(filepath)
                 if img is None: raise ValueError("Cannot read image")
                 rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                result, faces = eng.warp_single_image(rgb, params)
+                result, faces = eng.warp_single_image(rgb, job_params)
                 result = apply_disclosure_watermark(result, watermark)
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 save_rgb_image(out_path, result, filepath, preserve_metadata, watermark)
@@ -115,7 +115,7 @@ def cli_process(args):
 
             elif ext in VIDEO_EXTS:
                 out_path = media_job_output_path(job, output_dir, filepath, ".mp4")
-                preflight = preflight_media_job(filepath, out_path, compare_mode, params)
+                preflight = preflight_media_job(filepath, out_path, compare_mode, job_params)
                 print(f"    {format_preflight_summary(preflight)}")
                 if not preflight["ok"]:
                     msg = preflight_failure_message(preflight)
@@ -128,7 +128,7 @@ def cli_process(args):
                     })
                     failed += 1
                     continue
-                eng = FaceWarpEngine('video', max_faces, parser_model, onnx_provider)
+                eng = FaceWarpEngine('video', job_max_faces, job_parser_model, job_onnx_provider)
                 eng.grid_scale = 6
                 cap = cv2.VideoCapture(filepath)
                 if not cap.isOpened(): raise ValueError("Cannot open video")
@@ -136,18 +136,18 @@ def cli_process(args):
                 fps = cap.get(cv2.CAP_PROP_FPS) or 30
                 w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                out_w, out_h = video_output_size(w, h, compare_mode, params)
+                out_w, out_h = video_output_size(w, h, compare_mode, job_params)
                 writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
                 if not writer.isOpened():
                     raise ValueError(f"Cannot open output writer: {out_path}")
-                has_fx = has_effective_processing(params)
+                has_fx = has_effective_processing(job_params)
                 t0 = time.time()
                 for fi in range(total):
                     ret, frame = cap.read()
                     if not ret: break
                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     faces = eng.detect(rgb)
-                    proc = eng.warp(rgb, faces, params) if has_fx else rgb
+                    proc = eng.warp(rgb, faces, job_params) if has_fx else rgb
                     proc = compose_compare_frame(rgb, proc, compare_mode)
                     proc = apply_disclosure_watermark(proc, watermark)
                     writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))

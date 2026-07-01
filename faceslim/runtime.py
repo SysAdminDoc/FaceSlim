@@ -24,7 +24,7 @@ VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
 def exception_handler(exc_type, exc_value, exc_tb):
     msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
     try:
-        with open(os.path.join(APP_DIR, 'crash.log'), 'a') as f:
+        with open(os.path.join(APP_DIR, 'crash.log'), 'a', encoding="utf-8") as f:
             f.write(f"\n{'='*60}\n{time.strftime('%Y-%m-%d %H:%M:%S')}\n{'='*60}\n{msg}\n")
     except Exception:
         pass

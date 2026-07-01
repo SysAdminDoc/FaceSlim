@@ -56,5 +56,3 @@ def pseudo_locale_overflow_report(text_limits=None):
         if len(localized) > limit:
             report.append({"text": text, "localized": localized, "limit": limit})
     return report
-
-# ── Crash Handler ───────────────────────────────────────────────────────

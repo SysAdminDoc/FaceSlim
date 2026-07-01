@@ -79,11 +79,7 @@ EYE_SHARPEN_LABELS = {PARSE_L_EYE, PARSE_R_EYE, PARSE_L_BROW, PARSE_R_BROW}
 # Labels for lip color
 LIP_LABELS = {PARSE_U_LIP, PARSE_L_LIP}
 
-# MediaPipe face mesh oval - ordered contour tracing the face boundary
-# Used for precise face-region masking (much tighter than convex hull)
-FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
-             397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
-             172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
+FACE_OVAL = JAW_CONTOUR
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BUILT-IN PRESETS
@@ -538,10 +534,8 @@ def apply_teeth_whitening(frame, parsing, strength):
     s = strength / 100.0
     hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV).astype(np.float32)
 
-    # Increase value (brightness), decrease saturation in teeth region
-    mask_3 = mask[:, :, np.newaxis]
-    hsv[:, :, 1] = hsv[:, :, 1] * (1.0 - s * 0.5 * mask)   # reduce saturation (yellowness)
-    hsv[:, :, 2] = hsv[:, :, 2] + s * 35.0 * mask            # increase brightness
+    hsv[:, :, 1] = hsv[:, :, 1] * (1.0 - s * 0.5 * mask)
+    hsv[:, :, 2] = hsv[:, :, 2] + s * 35.0 * mask
     hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
     hsv[:, :, 2] = np.clip(hsv[:, :, 2], 0, 255)
 
@@ -971,7 +965,7 @@ def coerce_param_overrides(values):
     for key, value in (values or {}).items():
         normalized = str(key).strip().replace("-", "_")
         if normalized in CLI_PARAM_KEYS:
-            overrides[normalized] = int(value)
+            overrides[normalized] = max(0, min(int(value), 1024 if normalized == "post_stage_tile" else 100))
         elif normalized == "post_stage_model":
             overrides[normalized] = post_stage_model_key(value)
     return overrides
@@ -986,7 +980,7 @@ def parse_param_overrides(raw):
         key = key.strip().replace("-", "_")
         if key not in CLI_PARAM_KEYS:
             raise ValueError(f"Unknown parameter: {key}")
-        overrides[key] = int(value)
+        overrides[key] = max(0, min(int(value), 1024 if key == "post_stage_tile" else 100))
     return overrides
 
 
@@ -2292,7 +2286,7 @@ class PresetManager:
         presets = {}
         for f in glob.glob(os.path.join(PRESETS_DIR, '*.json')):
             try:
-                with open(f) as fp:
+                with open(f, encoding="utf-8") as fp:
                     data = json.load(fp)
                 presets[Path(f).stem] = data
             except Exception:
@@ -2301,12 +2295,11 @@ class PresetManager:
 
     @staticmethod
     def save(name, params):
-        # Sanitize name: strip path separators and dangerous chars
         safe_name = os.path.basename(name).replace('..', '_').strip('. ')
         if not safe_name:
             return None
         path = os.path.join(PRESETS_DIR, f"{safe_name}.json")
-        with open(path, 'w') as f:
+        with open(path, 'w', encoding="utf-8") as f:
             json.dump(params, f, indent=2)
         return path
 
@@ -2321,12 +2314,12 @@ class PresetManager:
     @staticmethod
     def export_all(filepath):
         data = {'built_in': BUILT_IN_PRESETS, 'custom': PresetManager.list_custom()}
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     @staticmethod
     def import_presets(filepath):
-        with open(filepath) as f:
+        with open(filepath, encoding="utf-8") as f:
             data = json.load(f)
         imported = 0
         for name, params in data.get('custom', {}).items():
