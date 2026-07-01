@@ -242,10 +242,11 @@ class ExportThread(QThread):
             writer = cv2.VideoWriter(self.out, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
             if not writer.isOpened():
                 raise ValueError(f"Cannot open output writer: {self.out}")
-            self.status.emit(f"Exporting {total} frames...")
+            self.status.emit(f"Exporting {total} frames..." if total > 0 else "Exporting...")
             has_fx = has_effective_processing(self.params)
             t_start = time.time()
-            for i in range(total):
+            i = 0
+            while True:
                 if self.cancelled:
                     self.status.emit("Export cancelled"); break
                 ret, frame = cap.read()
@@ -256,13 +257,14 @@ class ExportThread(QThread):
                 proc = compose_compare_frame(rgb, proc, self.compare_mode)
                 proc = apply_disclosure_watermark(proc, self.watermark)
                 writer.write(cv2.cvtColor(proc, cv2.COLOR_RGB2BGR))
+                i += 1
                 if total > 0:
-                    self.progress.emit(int((i+1)/total*100))
+                    self.progress.emit(int(i / total * 100))
                     elapsed = time.time() - t_start
-                    if i > 0:
-                        eta = (elapsed / (i+1)) * (total - i - 1)
+                    if i > 1:
+                        eta = (elapsed / i) * (total - i)
                         mins, secs = divmod(int(eta), 60)
-                        self.status.emit(f"Frame {i+1}/{total} | ETA: {mins}m {secs}s")
+                        self.status.emit(f"Frame {i}/{total} | ETA: {mins}m {secs}s")
             cap.release(); cap = None
             writer.release(); writer = None
             eng.close(); eng = None
