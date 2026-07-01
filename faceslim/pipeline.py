@@ -169,12 +169,12 @@ class OneEuroFilter:
         if self.x_prev is None:
             self.x_prev = x.copy()
             self.dx_prev = np.zeros_like(x)
-            self.t_prev = t or time.time()
+            self.t_prev = t if t is not None else time.time()
             return x.copy()
-        if t and self.t_prev:
+        if t is not None and self.t_prev is not None:
             dt = t - self.t_prev
             if dt > 0: self.freq = 1.0 / dt
-        self.t_prev = t or time.time()
+        self.t_prev = t if t is not None else time.time()
         a_d = self._alpha(self.dcutoff)
         dx = (x - self.x_prev) * self.freq
         dx_hat = a_d * dx + (1 - a_d) * self.dx_prev
@@ -2305,7 +2305,10 @@ class PresetManager:
 
     @staticmethod
     def delete(name):
-        path = os.path.join(PRESETS_DIR, f"{name}.json")
+        safe_name = os.path.basename(name).replace('..', '_').strip('. ')
+        if not safe_name:
+            return False
+        path = os.path.join(PRESETS_DIR, f"{safe_name}.json")
         if os.path.exists(path):
             os.remove(path)
             return True

@@ -1055,11 +1055,14 @@ class FaceSlimApp(QMainWindow):
 
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open File", "",
-            "Media Files (*.mp4 *.avi *.mov *.mkv *.webm *.wmv *.jpg *.jpeg *.png *.bmp *.tiff *.webp);;All Files (*)")
+            "Media Files (*.mp4 *.avi *.mov *.mkv *.webm *.wmv *.flv *.m4v *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp);;All Files (*)")
         if path: self._handle_drop(path)
 
     def _handle_drop(self, path):
         ext = os.path.splitext(path)[1].lower()
+        if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
+            self.toast.show_message("Unsupported file type", 3000)
+            return
         self.source_path = path
         if ext in IMAGE_EXTS:
             self.image_mode = True
@@ -1078,7 +1081,9 @@ class FaceSlimApp(QMainWindow):
 
     def _load_image(self, path):
         img = cv2.imread(path)
-        if img is None: return
+        if img is None:
+            self.toast.show_message("Cannot read image file", 4000)
+            return
         self.current_original = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         self._reset_timeline()
         # Reset cached engine so filter state doesn't bleed between images
@@ -1280,7 +1285,7 @@ class FaceSlimApp(QMainWindow):
     # ── Batch Processing ────────────────────────────────────────
     def start_batch(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files", "",
-            "Media Files (*.mp4 *.avi *.mov *.mkv *.jpg *.jpeg *.png *.bmp *.webp);;All Files (*)")
+            "Media Files (*.mp4 *.avi *.mov *.mkv *.webm *.wmv *.flv *.m4v *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp);;All Files (*)")
         if files: self._run_batch(files)
 
     def start_batch_folder(self):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Qt worker threads for preview, export, batch, and model diagnostics."""
 
+import math
 import os
 import subprocess
 import threading
@@ -79,7 +80,9 @@ class VideoThread(QThread):
                 self.status_update.emit("Failed to open video source")
                 return
 
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if not fps or not math.isfinite(fps) or fps <= 0:
+                fps = 30.0
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
             duration = (frame_count / fps) if (self.source is not None and frame_count > 0 and fps > 0) else 0.0
             self.timeline_update.emit(0.0, duration)
@@ -231,7 +234,9 @@ class ExportThread(QThread):
                 log_render_event("export_open_failed", msg, {"input": self.inp, "output": self.out})
                 self.error.emit(f"{msg} (see render.log)"); return
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if not fps or not math.isfinite(fps) or fps <= 0:
+                fps = 30
             w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             out_w, out_h = video_output_size(w, h, self.compare_mode, self.params)
             writer = cv2.VideoWriter(self.out, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
@@ -511,7 +516,9 @@ class BatchThread(QThread):
             if not cap.isOpened():
                 raise ValueError(f"Cannot open {filepath}")
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if not fps or not math.isfinite(fps) or fps <= 0:
+                fps = 30
             w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             out_dir = os.path.dirname(out_path)
             if out_dir:

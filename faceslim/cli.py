@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -133,7 +134,9 @@ def cli_process(args):
                 cap = cv2.VideoCapture(filepath)
                 if not cap.isOpened(): raise ValueError("Cannot open video")
                 total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                if not fps or not math.isfinite(fps) or fps <= 0:
+                    fps = 30
                 w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 out_w, out_h = video_output_size(w, h, compare_mode, job_params)

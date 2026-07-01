@@ -293,6 +293,28 @@ class CliAndManifestTests(unittest.TestCase):
         self.assertEqual(job1_faces, 1)
 
 
+class OneEuroFilterTests(unittest.TestCase):
+    def test_filter_accepts_zero_timestamp(self):
+        f = faceslim.OneEuroFilter(freq=30)
+        pts = np.array([[100.0, 200.0]])
+
+        result0 = f(pts.copy(), t=0.0)
+        result1 = f(pts.copy(), t=0.033)
+
+        self.assertEqual(result0.shape, pts.shape)
+        self.assertEqual(result1.shape, pts.shape)
+
+    def test_filter_reset_clears_state(self):
+        f = faceslim.OneEuroFilter(freq=30)
+        pts = np.array([[100.0, 200.0]])
+
+        f(pts.copy(), t=0.0)
+        f.reset()
+
+        self.assertIsNone(f.x_prev)
+        self.assertIsNone(f.t_prev)
+
+
 class BatchPipelineTests(unittest.TestCase):
     def _with_temp_render_log(self, tmp_path):
         old_path = runtime_module.RENDER_LOG_PATH
